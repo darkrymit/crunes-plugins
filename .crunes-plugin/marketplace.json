@@ -1,0 +1,16 @@
+{
+  "format": "1",
+  "name": "crunes-plugins",
+  "description": "Official first-party plugins for crunes",
+  "owner": { "name": "darkrymit" },
+  "plugins": [
+    {
+      "name": "git",
+      "description": "Git context runes",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/git",
+      "category": "runes"
+    }
+  ]
+}

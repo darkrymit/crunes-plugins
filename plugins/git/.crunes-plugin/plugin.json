@@ -1,0 +1,22 @@
+{
+  "format": "1",
+  "runes": {
+    "status": {
+      "name": "Git Status",
+      "description": "Orientation snapshot: discovers all git repositories in the workspace and reports branch, tracking, staged/unstaged files, and recent commits for each.",
+      "permissions": {
+        "use": {
+          "allow": [
+            "shell:git -C \"*\" rev-parse --abbrev-ref HEAD",
+            "shell:git -C \"*\" rev-list --count HEAD @{u}",
+            "shell:git -C \"*\" rev-list --count @{u} HEAD",
+            "shell:git -C \"*\" status --porcelain",
+            "shell:git -C \"*\" log --oneline -10",
+            "shell:git -C \"*\" stash list",
+            "fs.glob:**/.git"
+          ]
+        }
+      }
+    }
+  }
+}
