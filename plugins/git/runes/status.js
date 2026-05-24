@@ -36,7 +36,7 @@ export async function use(args) {
     const safeDir = dir.replace(/[/\\]$/, '')
     try {
       // Test if it's actually a git repo
-      await shell(`git -C "${safeDir}" rev-parse --abbrev-ref HEAD`, { throw: true })
+      await shell.exec(`git -C "${safeDir}" rev-parse --abbrev-ref HEAD`, { throw: true })
     } catch (e) {
       if (targetPath) {
         sections.push(section.create('error', { type: 'markdown', content: `Not a git repository: ${safeDir}` }))
@@ -44,26 +44,26 @@ export async function use(args) {
       continue
     }
 
-    const branch = await shell(`git -C "${safeDir}" rev-parse --abbrev-ref HEAD`, { throw: false })
+    const branch = await shell.exec(`git -C "${safeDir}" rev-parse --abbrev-ref HEAD`, { throw: false })
 
     let upstream = ''
     try {
-      const ahead = await shell(`git -C "${safeDir}" rev-list --count HEAD @{u}`, { throw: true })
-      const behind = await shell(`git -C "${safeDir}" rev-list --count @{u} HEAD`, { throw: true })
+      const ahead = await shell.exec(`git -C "${safeDir}" rev-list --count HEAD @{u}`, { throw: true })
+      const behind = await shell.exec(`git -C "${safeDir}" rev-list --count @{u} HEAD`, { throw: true })
       upstream = ` (↑${ahead} ahead, ↓${behind} behind)`
     } catch {
       // No upstream set, omit ahead/behind
     }
 
-    const status = await shell(`git -C "${safeDir}" status --porcelain`, { throw: false })
+    const status = await shell.exec(`git -C "${safeDir}" status --porcelain`, { throw: false })
     const lines = status.split('\n').filter(Boolean)
     const staged = lines.filter(l => l[0] !== ' ' && l[0] !== '?')
     const unstaged = lines.filter(l => l[1] !== ' ' && l[1] !== '?')
     const untracked = lines.filter(l => l.startsWith('??'))
 
-    const log = await shell(`git -C "${safeDir}" log --oneline -10`, { throw: false })
+    const log = await shell.exec(`git -C "${safeDir}" log --oneline -10`, { throw: false })
 
-    const stashStr = await shell(`git -C "${safeDir}" stash list`, { throw: false })
+    const stashStr = await shell.exec(`git -C "${safeDir}" stash list`, { throw: false })
     const stashCount = stashStr ? stashStr.split('\n').filter(Boolean).length : 0
 
     const absPath = await fs.resolve(safeDir)

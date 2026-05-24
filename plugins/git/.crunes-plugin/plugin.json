@@ -7,12 +7,12 @@
       "permissions": {
         "use": {
           "allow": [
-            "shell:git -C \"*\" rev-parse --abbrev-ref HEAD",
-            "shell:git -C \"*\" rev-list --count HEAD @{u}",
-            "shell:git -C \"*\" rev-list --count @{u} HEAD",
-            "shell:git -C \"*\" status --porcelain",
-            "shell:git -C \"*\" log --oneline -10",
-            "shell:git -C \"*\" stash list",
+            "shell.exec:git -C \"*\" rev-parse --abbrev-ref HEAD",
+            "shell.exec:git -C \"*\" rev-list --count HEAD @{u}",
+            "shell.exec:git -C \"*\" rev-list --count @{u} HEAD",
+            "shell.exec:git -C \"*\" status --porcelain",
+            "shell.exec:git -C \"*\" log --oneline -10",
+            "shell.exec:git -C \"*\" stash list",
             "fs.glob:**/.git"
           ]
         }
