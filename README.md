@@ -15,3 +15,8 @@ Once the marketplace is added, you can install any of the bundled plugins, for e
 ```bash
 crunes plugin install crunes-plugins@git
 ```
+
+## License
+
+MIT — [Tamerlan Hurbanov (DarkRymit)](https://github.com/darkrymit)
+
