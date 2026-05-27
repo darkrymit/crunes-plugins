@@ -1,4 +1,9 @@
+# IDE
 .vscode/*
+.history/
+*.vsix
 .idea/*
 *.iml
-.history/
+
+# Local manual testing scratch directories
+scratch/
