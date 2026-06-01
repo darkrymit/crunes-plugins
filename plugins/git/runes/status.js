@@ -48,8 +48,8 @@ export async function use(args) {
 
     let upstream = ''
     try {
-      const ahead = await shell.exec(`git -C "${safeDir}" rev-list --count HEAD @{u}`, { throw: true })
-      const behind = await shell.exec(`git -C "${safeDir}" rev-list --count @{u} HEAD`, { throw: true })
+      const ahead = await shell.exec(`git -C "${safeDir}" rev-list --count @{u}..HEAD`, { throw: true })
+      const behind = await shell.exec(`git -C "${safeDir}" rev-list --count HEAD..@{u}`, { throw: true })
       upstream = ` (↑${ahead} ahead, ↓${behind} behind)`
     } catch {
       // No upstream set, omit ahead/behind
