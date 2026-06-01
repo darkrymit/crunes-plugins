@@ -8,8 +8,8 @@
         "use": {
           "allow": [
             "shell.exec:git -C \"*\" rev-parse --abbrev-ref HEAD",
-            "shell.exec:git -C \"*\" rev-list --count HEAD @{u}",
-            "shell.exec:git -C \"*\" rev-list --count @{u} HEAD",
+            "shell.exec:git -C \"*\" rev-list --count @{u}..HEAD",
+            "shell.exec:git -C \"*\" rev-list --count HEAD..@{u}",
             "shell.exec:git -C \"*\" status --porcelain",
             "shell.exec:git -C \"*\" log --oneline -10",
             "shell.exec:git -C \"*\" stash list",
