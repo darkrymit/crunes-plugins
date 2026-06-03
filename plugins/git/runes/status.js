@@ -6,7 +6,7 @@ export async function args(b) {
     .build()
 }
 
-export async function use(args) {
+export async function run(args) {
   const targetPath = args._[0]
 
   let gitDirs = []

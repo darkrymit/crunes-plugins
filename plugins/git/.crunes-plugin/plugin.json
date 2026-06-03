@@ -5,7 +5,7 @@
       "name": "Git Status",
       "description": "Orientation snapshot: discovers all git repositories in the workspace and reports branch, tracking, staged/unstaged files, and recent commits for each.",
       "permissions": {
-        "use": {
+        "run": {
           "allow": [
             "shell.exec:git -C \"*\" rev-parse --abbrev-ref HEAD",
             "shell.exec:git -C \"*\" rev-list --count @{u}..HEAD",
