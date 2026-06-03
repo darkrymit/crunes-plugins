@@ -15,4 +15,4 @@ crunes use git:status
 This plugin runs in the V8 sandbox and explicitly scopes permissions to guarantee it cannot modify or accidentally leak non-git data:
 
 - **`fs.glob`:** Strictly limited to `**/.git` discovery.
-- **`shell.exec`:** Strictly limited to non-destructive read-only commands (`git status`, `git log`, `git rev-parse`, `git rev-list`, and `git stash list`). It cannot run `git commit`, `git checkout`, etc.
+- **`shell.run`:** Strictly limited to non-destructive read-only commands (`git status`, `git log`, `git rev-parse`, `git rev-list`, and `git stash list`). It cannot run `git commit`, `git checkout`, etc.
