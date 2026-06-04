@@ -5,7 +5,7 @@ Git context runes — collapse common multi-step git queries into single structu
 ## Usage
 
 ```bash
-crunes use git:status
+crunes run git:status
 ```
 
 *Note: In a monorepo, `git:status` will automatically discover all sub-repositories and output a separate section for each.*

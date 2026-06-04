@@ -63,4 +63,4 @@ plugins/<plugin-name>/
        }
      }
      ```
-  3. Execute via the local CLI: `node path/to/crunes-cli/dist/cli.js -p use local-testing:<rune-name>`.
+  3. Execute via the local CLI: `node path/to/crunes-cli/dist/cli.js -p run local-testing:<rune-name>`.
