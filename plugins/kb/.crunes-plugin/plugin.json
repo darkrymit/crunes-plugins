@@ -1,0 +1,16 @@
+{
+  "format": "1",
+  "runes": {
+    "kb": {
+      "name": "Knowledge base",
+      "description": "Query knowledge bundles: what exists, what is in them, and their text",
+      "vars": { "roots": ["docs/kb"] },
+      "permissions": {
+        "run": {
+          "allow": ["fs.glob:docs/kb/**/*.md", "fs.read:docs/kb/**"],
+          "deny": []
+        }
+      }
+    }
+  }
+}
