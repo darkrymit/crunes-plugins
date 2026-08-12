@@ -311,10 +311,25 @@ export function args(b) {
 }
 
 export async function run(args) {
-  /* Bare kb prints help, as every other rune does. Discovery is skipped
-   * entirely on that path — there is no reason to scan a corpus to print a
-   * command list. */
-  if (args.help || !args.$command) return rune.helpSection()
+  /* An unmatched command is the most specific thing known about the call, so it
+   * is reported before anything else — including --help, which cannot sensibly
+   * answer a question about a command that does not exist. */
+  if (args.$command === '' && args.$rest.length > 0) {
+    return section.create('kb', {
+      type: 'markdown',
+      content: md.codeBlock(
+        `Unknown command: ${args.$rest[0]}\n` +
+        'Available: list, read\n' +
+        'Try: kb list'),
+    }, { title: 'kb' })
+  }
+
+  /* Help is scoped to the matched command: kb read --help renders read's own
+   * help, not the whole index. Bare kb prints the index, as every other rune
+   * does. Discovery is skipped entirely on both paths — there is no reason to
+   * scan a corpus to print a command list. */
+  if (args.help) return rune.helpSection(args.$command)
+  if (!args.$command) return rune.helpSection()
 
   const { bundles, problems } = await discover()
 
