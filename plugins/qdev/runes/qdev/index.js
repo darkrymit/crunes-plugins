@@ -73,6 +73,8 @@ function resolveEnabledKeys(enable) {
 export function args(b) {
   const enable = resolveEnabledKeys(vars.read('qdev.enable', []))
 
+  b.option('-h, --help', 'Show help')
+
   if (enable.has('logs')) {
     b.command('logs', 'Log snapshot with optional filters', c => {
       c.option('--level <level>', 'Min level: DEBUG|INFO|WARN|ERROR')
@@ -272,12 +274,20 @@ function fuzzyMatch(input, enable) {
 }
 
 export async function run(args) {
-  if(args.help) return rune.helpSection()
   const enable = resolveEnabledKeys(vars.read('qdev.enable', []))
 
+  /* An unmatched command is reported before --help is honoured: --help cannot
+   * sensibly answer a question about a command that does not exist, and the
+   * fuzzy suggestion is the more useful reply. */
   if (!args.$command && args.$rest.length > 0) {
     return fuzzyMatch(args.$rest.join(' '), enable)
   }
+
+  /* Help is scoped to the matched command, so `qdev config --help` renders
+   * config's four subcommands rather than all thirty-four. Bare `qdev` prints
+   * the index, as every other rune does. */
+  if (args.help) return rune.helpSection(args.$command)
+  if (!args.$command) return rune.helpSection()
 
   const baseUrl = resolveBaseUrl()
 
