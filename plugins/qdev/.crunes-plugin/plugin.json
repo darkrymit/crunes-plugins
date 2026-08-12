@@ -1,0 +1,41 @@
+{
+  "format": "1",
+  "runes": {
+    "qdev": {
+      "path": "runes/qdev/index.js",
+      "name": "Quarkus Dev Tools",
+      "description": "Quarkus Dev UI CLI: logs, health, config, flyway, cache, scheduler, endpoints, graphql, openapi, dev-services, datasources. Widen the command set with the qdev.enable var.",
+      "vars": {
+        "qdev.baseUrl": "http://localhost:8080",
+        "qdev.enable": [
+          "logs",
+          "health",
+          "config.list",
+          "config.get",
+          "endpoints",
+          "dev-services",
+          "openapi",
+          "graphql.schema",
+          "flyway.status",
+          "cache.list",
+          "scheduler.list",
+          "db.sources",
+          "db.tables"
+        ]
+      },
+      "permissions": {
+        "run": {
+          "allow": [
+            "http.fetch:POST::**/q/dev-mcp",
+            "http.fetch:POST::**/graphql",
+            "http.fetch:GET::**/q/health",
+            "ws.client:ws*://*/q/dev-ui/json-rpc-ws",
+            "cache.read:@local-cache::qdev-server",
+            "cache.write:@local-cache::qdev-server"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

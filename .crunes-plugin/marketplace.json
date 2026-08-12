@@ -19,6 +19,14 @@
       "author": { "name": "darkrymit" },
       "source": "./plugins/kb",
       "category": "runes"
+    },
+    {
+      "name": "qdev",
+      "description": "Quarkus Dev UI CLI: logs, health, config, flyway, cache, scheduler, endpoints, graphql, openapi, dev-services, datasources",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/qdev",
+      "category": "runes"
     }
   ]
 }
