@@ -183,10 +183,14 @@ function renderBundle(bundle, opts) {
  * or cross-bundle (kb:id/specs/x or kb:id/specs/x.md). Anything else — a URL,
  * an anchor-only link — is not a document reference and is ignored. */
 function linksIn(body) {
+  const cleanBody = body
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/~~~[\s\S]*?~~~/g, '')
+    .replace(/`[^`\n]*`/g, '')
   const out = []
   const re = /\]\((kb:[^)\s]+|\/[^)\s]+)\)/g
   let m
-  while ((m = re.exec(body)) !== null) {
+  while ((m = re.exec(cleanBody)) !== null) {
     const target = m[1].split('#')[0].replace(/\/+$/, '')
     if (!target) continue
     if (!out.includes(target)) out.push(target)
