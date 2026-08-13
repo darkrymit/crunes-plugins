@@ -179,16 +179,16 @@ function renderBundle(bundle, opts) {
 
 /* ---------- links and rendering ---------- */
 
-/* Markdown links that address a document: bundle-absolute (/specs/x.md) or
- * cross-bundle (kb:id/specs/x.md). Anything else — a URL, an anchor-only link —
- * is not a document reference and is ignored. */
+/* Markdown links that address a document: bundle-absolute (/specs/x or /specs/x.md)
+ * or cross-bundle (kb:id/specs/x or kb:id/specs/x.md). Anything else — a URL,
+ * an anchor-only link — is not a document reference and is ignored. */
 function linksIn(body) {
   const out = []
   const re = /\]\((kb:[^)\s]+|\/[^)\s]+)\)/g
   let m
   while ((m = re.exec(body)) !== null) {
-    const target = m[1].split('#')[0]
-    if (!target.endsWith('.md')) continue
+    const target = m[1].split('#')[0].replace(/\/+$/, '')
+    if (!target) continue
     if (!out.includes(target)) out.push(target)
   }
   return out
@@ -233,8 +233,8 @@ async function renderBrief(doc) {
 /* ---------- refs ---------- */
 
 /* Accepted forms, in the order tried:
- *   kb:<id>/<abs>   what documents contain
- *   <id>/<abs>      what list prints — canonical
+ *   kb:<id>/<abs>   what documents contain (with or without .md)
+ *   <id>/<abs>      what list prints — canonical (with or without .md)
  *   <id>            the bundle root
  *   /<abs>          bundle-absolute; ambiguous unless one bundle has it
  *   <path>          a plain filesystem path, e.g. from grep
@@ -258,10 +258,16 @@ function resolveRef(ref, bundles, kbFilter) {
   }
 
   const inBundle = (b, abs) => {
-    const doc = b.docs.find(d => d.abs === abs)
-    if (doc) return { doc, bundle: b }
+    const absWithMd = abs.endsWith('.md') ? abs : `${abs}.md`
+    const docWithMd = b.docs.find(d => d.abs === absWithMd)
+    if (docWithMd) return { doc: docWithMd, bundle: b }
+
+    const docDirect = b.docs.find(d => d.abs === abs)
+    if (docDirect) return { doc: docDirect, bundle: b }
+
     const ix = b.indexes.find(i => i.dirAbs === abs || i.abs === abs)
     if (ix) return { index: ix, bundle: b }
+
     return null
   }
 
@@ -273,15 +279,16 @@ function resolveRef(ref, bundles, kbFilter) {
       const abs = slash === -1 ? '' : bare.slice(slash)
       const hit = inBundle(bundle, abs)
       if (hit) return hit
-      return { error: `${ref} — bundle ${id} has no ${abs || '/'}. Try: kb read ${id}` }
+      return { error: `${ref} — bundle ${id} has no ${abs || '/'}. Try: kb read ${id}`, fatal: true }
     }
     for (const b of pool) {
-      const doc = b.docs.find(d => d.path === bare)
+      const bareWithMd = bare.endsWith('.md') ? bare : `${bare}.md`
+      const doc = b.docs.find(d => d.path === bareWithMd || d.path === bare)
       if (doc) return { doc, bundle: b }
       const ix = b.indexes.find(i => i.path === bare || dirOf(i.path) === bare)
       if (ix) return { index: ix, bundle: b }
     }
-    return { error: `${ref} — not found. Known bundles: ${bundles.map(b => b.id).join(', ')}` }
+    return { error: `${ref} — not found. Known bundles: ${bundles.map(b => b.id).join(', ')}`, fatal: false }
   }
 
   const hits = []
@@ -290,11 +297,17 @@ function resolveRef(ref, bundles, kbFilter) {
     if (hit) hits.push(hit)
   }
   if (hits.length === 1) return hits[0]
-  if (hits.length === 0) return { error: `${ref} — no bundle has that path. Try: kb list` }
+  if (hits.length === 0) {
+    const isExplicitMd = cleaned.endsWith('.md')
+    return {
+      error: `${ref} — no bundle has that path. Try: kb list`,
+      fatal: isExplicitMd,
+    }
+  }
   /* Hand back the refs rather than naming the bundles: the answer to an
    * ambiguous path is a full ref, and these can be pasted straight back. */
   const full = hits.map(h => (h.doc ? h.doc.ref : h.index.ref))
-  return { error: `${ref} — in ${hits.length} bundles. Use one of: ${full.join('  ')}` }
+  return { error: `${ref} — in ${hits.length} bundles. Use one of: ${full.join('  ')}`, fatal: false }
 }
 
 /* ---------- rune ---------- */
@@ -308,6 +321,18 @@ export function args(b) {
     .command('read', 'Full text of documents or of a directory index, with links in brief', c => {
       c.positional('<refs...>', 'Documents or directories. A directory reads its index.')
     })
+    .command('broken', 'Find broken or unresolvable links in documents', c => {
+      c.positional('[refs...]', 'Documents, directories, or bundles to check from (default: requires refs or --all)')
+      c.option('--all', 'Check all documents across all bundles', false)
+      c.option('-r, --recursive', 'Traverse outbound links recursively until all reachable documents are verified', false)
+      c.option('-d, --depth <n>', 'Maximum link hop depth from seed references')
+      c.option('-l, --limit <n>', 'Maximum documents visited during traversal (default: 500)')
+      c.option('--brief', 'Output only summary and broken links', false)
+    })
+    .command('dead', 'Find unreferenced (orphaned) documents or directories in knowledge bundles', c => {
+      c.positional('[refs...]', 'Bundle(s) or directories to check within (default: requires refs or --all)')
+      c.option('--all', 'Check across all bundles', false)
+    })
 }
 
 export async function run(args) {
@@ -317,10 +342,10 @@ export async function run(args) {
   if (args.$command === '' && args.$rest.length > 0) {
     return section.create('kb', {
       type: 'markdown',
-      content: md.codeBlock(
+      content:
         `Unknown command: ${args.$rest[0]}\n` +
-        'Available: list, read\n' +
-        'Try: kb list'),
+        'Available: list, read, broken, dead\n' +
+        'Try: kb list',
     }, { title: 'kb' })
   }
 
@@ -339,22 +364,22 @@ export async function run(args) {
         const roots = vars.read('roots', ['.'])
         return section.create('kb', {
           type: 'markdown',
-          content: md.codeBlock(
+          content:
             `No bundles found. Looked under: ${roots.join(', ')}\n` +
             'A bundle root is an index.md whose frontmatter carries kb_version.' +
-            problemBlock(problems)),
+            problemBlock(problems),
         }, { title: 'Knowledge bases' })
       }
       /* One section per bundle, which is also how a caller selects a single
        * knowledge base: kb[-s <id>] list. That is why there is no --kb flag. */
       const out = bundles.map(b => section.create(b.id, {
         type: 'markdown',
-        content: md.codeBlock(renderBundle(b, { brief: !!args.brief })),
+        content: renderBundle(b, { brief: !!args.brief }),
       }, { title: b.title || b.id }))
       if (problems.length) {
         out.push(section.create('kb:problems', {
           type: 'markdown',
-          content: md.codeBlock(problemBlock(problems).trim()),
+          content: problemBlock(problems).trim(),
         }, { title: 'Problems' }))
       }
       return out
@@ -365,9 +390,9 @@ export async function run(args) {
       if (refs.length === 0) {
         return section.create('kb', {
           type: 'markdown',
-          content: md.codeBlock(
+          content:
             'read needs at least one ref.\n' +
-            'Find them with: kb list'),
+            'Find them with: kb list',
         }, { title: 'read' })
       }
 
@@ -382,7 +407,7 @@ export async function run(args) {
         if (hit.error) {
           out.push(section.create(`unresolved:${ref}`, {
             type: 'markdown',
-            content: md.codeBlock(hit.error),
+            content: hit.error,
           }, { title: ref }))
           continue
         }
@@ -425,7 +450,7 @@ export async function run(args) {
             emitted.add(name)
             out.push(section.create(name, {
               type: 'markdown',
-              content: md.codeBlock(`${target} — unresolvable from ${source.ref}`),
+              content: `${target} — unresolvable from ${source.ref}`,
             }, { title: target }))
             continue
           }
@@ -442,7 +467,305 @@ export async function run(args) {
       return out
     }
 
+    case 'broken': {
+      const refs = Array.isArray(args.refs) ? args.refs : []
+      const isRecursive = !!args.recursive
+      const rawLimit = args.limit !== undefined ? Number(args.limit) : 500
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 500
+      const rawDepth = args.depth !== undefined ? Number(args.depth) : undefined
+      const maxDepth = Number.isFinite(rawDepth)
+        ? rawDepth
+        : (isRecursive ? Infinity : (refs.length > 0 ? 1 : 0))
+
+      if (refs.length === 0 && !args.all) {
+        return section.create('kb', {
+          type: 'markdown',
+          content:
+            'broken needs at least one ref or --all.\n' +
+            'To audit all bundles: kb broken --all\n' +
+            'Find refs with: kb list',
+        }, { title: 'broken' })
+      }
+
+      if (bundles.length === 0) {
+        const roots = vars.read('roots', ['.'])
+        return section.create('kb:broken', {
+          type: 'markdown',
+          content:
+            `No bundles found to check under: ${roots.join(', ')}\n` +
+            'A bundle root is an index.md whose frontmatter carries kb_version.' +
+            problemBlock(problems),
+        }, { title: 'kb broken' })
+      }
+
+      // Determine seeds
+      const seeds = []
+      const unresolvedSeeds = []
+
+      if (refs.length > 0) {
+        for (const ref of refs) {
+          const hit = resolveRef(ref, bundles, null)
+          if (hit.error) {
+            unresolvedSeeds.push({ ref, error: hit.error })
+          } else if (hit.doc) {
+            seeds.push({ doc: hit.doc, bundle: hit.bundle })
+          } else if (hit.index) {
+            seeds.push({ index: hit.index, bundle: hit.bundle })
+            const subDocs = hit.bundle.docs.filter(d => hit.index.dirAbs === '' || d.abs.startsWith(hit.index.dirAbs + '/'))
+            for (const sd of subDocs) seeds.push({ doc: sd, bundle: hit.bundle })
+          }
+        }
+      } else {
+        for (const b of bundles) {
+          for (const d of b.docs) seeds.push({ doc: d, bundle: b })
+          for (const i of b.indexes) seeds.push({ index: i, bundle: b })
+        }
+      }
+
+      const queue = seeds.map(s => ({ ...s, depth: 0 }))
+      const visited = new Set()
+      const bundleStats = new Map()
+      const brokenByBundle = new Map()
+
+      for (const b of bundles) {
+        bundleStats.set(b.id, { visitedCount: 0, linksCount: 0, bundle: b })
+        brokenByBundle.set(b.id, [])
+      }
+
+      while (queue.length > 0 && visited.size < limit) {
+        const item = queue.shift()
+        const source = item.doc || item.index
+        const sourceKey = source.ref || source.path
+        if (visited.has(sourceKey)) continue
+        visited.add(sourceKey)
+
+        const bundleId = item.bundle.id
+        const stats = bundleStats.get(bundleId)
+        if (stats) stats.visitedCount++
+
+        const text = await fs.read(source.path, { throw: false })
+        if (text === null) {
+          if (brokenByBundle.has(bundleId)) {
+            brokenByBundle.get(bundleId).push({ source: sourceKey, target: source.path, error: 'Could not read file from disk', fatal: true })
+          }
+          continue
+        }
+
+        const { body } = splitFrontmatter(text)
+        const links = linksIn(body)
+        if (stats) stats.linksCount += links.length
+
+        for (const target of links) {
+          const link = resolveRef(target, bundles, target.startsWith('/') ? bundleId : null)
+
+          if (link.error) {
+            if (brokenByBundle.has(bundleId)) {
+              brokenByBundle.get(bundleId).push({ source: sourceKey, target, error: link.error, fatal: link.fatal !== false })
+            }
+          } else if (link.doc && item.depth + 1 <= maxDepth && !visited.has(link.doc.ref)) {
+            queue.push({ doc: link.doc, bundle: link.bundle, depth: item.depth + 1 })
+          }
+        }
+      }
+
+      const out = []
+
+      if (unresolvedSeeds.length > 0) {
+        const seedLines = unresolvedSeeds.map(s => `  ✗ ${s.error}`).join('\n')
+        out.push(section.create('kb:unresolved', {
+          type: 'markdown',
+          content: `Unresolved seed references:\n${seedLines}`,
+        }, { title: 'Unresolved seeds' }))
+      }
+
+      for (const [bId, stats] of bundleStats.entries()) {
+        if (stats.visitedCount === 0 && refs.length > 0) continue
+        const broken = brokenByBundle.get(bId) || []
+
+        if (broken.length === 0) {
+          out.push(section.create(bId, {
+            type: 'markdown',
+            content: `✓ Verified ${stats.visitedCount} document(s), ${stats.linksCount} link(s). All links valid.`,
+          }, { title: stats.bundle.title || bId }))
+        } else {
+          const fatalCount = broken.filter(b => b.fatal).length
+          const warnCount = broken.filter(b => !b.fatal).length
+
+          let summaryLine = ''
+          if (fatalCount > 0 && warnCount > 0) {
+            summaryLine = `✗ Found ${fatalCount} broken link(s) and ${warnCount} warning(s) across ${stats.visitedCount} document(s) checked (${stats.linksCount} total links verified).\n`
+          } else if (fatalCount > 0) {
+            summaryLine = `✗ Found ${fatalCount} broken link(s) across ${stats.visitedCount} document(s) checked (${stats.linksCount} total links verified).\n`
+          } else {
+            summaryLine = `! Found ${warnCount} warning(s) across ${stats.visitedCount} document(s) checked (${stats.linksCount} total links verified).\n`
+          }
+
+          const rows = [summaryLine]
+          const bySource = new Map()
+          for (const b of broken) {
+            if (!bySource.has(b.source)) bySource.set(b.source, [])
+            bySource.get(b.source).push(b)
+          }
+          for (const [src, items] of bySource.entries()) {
+            rows.push(src)
+            for (const it of items) {
+              const sym = it.fatal ? '✗' : '!'
+              rows.push(`  ${sym} ${it.error}`)
+            }
+            rows.push('')
+          }
+
+          out.push(section.create(bId, {
+            type: 'markdown',
+            content: rows.join('\n').trim(),
+          }, { title: stats.bundle.title || bId }))
+        }
+      }
+
+      if (problems.length) {
+        out.push(section.create('kb:problems', {
+          type: 'markdown',
+          content: problemBlock(problems).trim(),
+        }, { title: 'Problems' }))
+      }
+
+      return out
+    }
+
+    case 'dead': {
+      const refs = Array.isArray(args.refs) ? args.refs : []
+
+      if (refs.length === 0 && !args.all) {
+        return section.create('kb', {
+          type: 'markdown',
+          content:
+            'dead needs at least one ref or --all.\n' +
+            'To check all bundles: kb dead --all\n' +
+            'Find refs with: kb list',
+        }, { title: 'dead' })
+      }
+
+      if (bundles.length === 0) {
+        const roots = vars.read('roots', ['.'])
+        return section.create('kb:dead', {
+          type: 'markdown',
+          content:
+            `No bundles found to check under: ${roots.join(', ')}\n` +
+            'A bundle root is an index.md whose frontmatter carries kb_version.' +
+            problemBlock(problems),
+        }, { title: 'kb dead' })
+      }
+
+      // 1. Collect all incoming links across the entire corpus
+      const referenced = new Set()
+      for (const b of bundles) {
+        for (const item of [...b.docs, ...b.indexes]) {
+          const text = await fs.read(item.path, { throw: false })
+          if (text === null) continue
+          const { body } = splitFrontmatter(text)
+          for (const target of linksIn(body)) {
+            const hit = resolveRef(target, bundles, target.startsWith('/') ? b.id : null)
+            if (hit.doc) referenced.add(hit.doc.ref)
+            if (hit.index) referenced.add(hit.index.ref)
+          }
+        }
+      }
+
+      // 2. Determine target items to audit per bundle
+      const targetsByBundle = new Map()
+      const unresolvedSeeds = []
+
+      for (const b of bundles) {
+        targetsByBundle.set(b.id, { bundle: b, items: [], isRoot: true })
+      }
+
+      if (refs.length > 0) {
+        for (const b of bundles) targetsByBundle.get(b.id).items = []
+
+        for (const ref of refs) {
+          const hit = resolveRef(ref, bundles, null)
+          if (hit.error) {
+            unresolvedSeeds.push({ ref, error: hit.error })
+            continue
+          }
+          const bData = targetsByBundle.get(hit.bundle.id)
+          if (hit.doc) {
+            bData.items.push(hit.doc)
+            bData.isRoot = false
+          } else if (hit.index) {
+            if (hit.index.dirAbs === '') {
+              // Bundle root
+              bData.items.push(...hit.bundle.docs)
+              for (const ix of hit.bundle.indexes) {
+                if (ix.dirAbs !== '') bData.items.push(ix)
+              }
+              bData.isRoot = true
+            } else {
+              // Subdirectory
+              const subDocs = hit.bundle.docs.filter(d => d.abs.startsWith(hit.index.dirAbs + '/'))
+              bData.items.push(...subDocs)
+              for (const ix of hit.bundle.indexes) {
+                if (ix.dirAbs !== '' && ix.dirAbs.startsWith(hit.index.dirAbs + '/')) bData.items.push(ix)
+              }
+              bData.isRoot = false
+            }
+          }
+        }
+      } else {
+        for (const b of bundles) {
+          const bData = targetsByBundle.get(b.id)
+          bData.items.push(...b.docs)
+          for (const ix of b.indexes) {
+            if (ix.dirAbs !== '') bData.items.push(ix)
+          }
+          bData.isRoot = true
+        }
+      }
+
+      const out = []
+
+      if (unresolvedSeeds.length > 0) {
+        const seedLines = unresolvedSeeds.map(s => `  ✗ ${s.error}`).join('\n')
+        out.push(section.create('kb:unresolved', {
+          type: 'markdown',
+          content: `Unresolved seed references:\n${seedLines}`,
+        }, { title: 'Unresolved seeds' }))
+      }
+
+      for (const [bId, data] of targetsByBundle.entries()) {
+        if (data.items.length === 0 && refs.length > 0) continue
+
+        const unreferenced = data.items.filter(item => !referenced.has(item.ref))
+
+        if (unreferenced.length === 0) {
+          out.push(section.create(bId, {
+            type: 'markdown',
+            content: `✓ All ${data.items.length} document(s) are referenced.`,
+          }, { title: data.bundle.title || bId }))
+        } else {
+          const rows = [
+            `! Found ${unreferenced.length} unreferenced item(s) across ${data.items.length} checked:\n`,
+            ...unreferenced.map(item => `  ! ${item.ref}`),
+          ]
+          out.push(section.create(bId, {
+            type: 'markdown',
+            content: rows.join('\n').trim(),
+          }, { title: data.bundle.title || bId }))
+        }
+      }
+
+      if (problems.length) {
+        out.push(section.create('kb:problems', {
+          type: 'markdown',
+          content: problemBlock(problems).trim(),
+        }, { title: 'Problems' }))
+      }
+
+      return out
+    }
+
     default:
       return rune.helpSection()
   }
 }
+

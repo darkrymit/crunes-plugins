@@ -1,6 +1,6 @@
 # kb
 
-Query knowledge bundles: `list` shows what bundles exist and how they are laid out, `read` returns the text of documents addressed by ref. Bundles are discovered from document frontmatter rather than from configuration, so adding a bundle to a project is a matter of writing an `index.md`, not editing config.
+Query knowledge bundles: `list` shows what bundles exist and how they are laid out, `read` returns document text, `broken` audits link health, and `dead` discovers unreferenced (orphaned) files. Bundles are discovered from document frontmatter rather than from configuration, so adding a bundle to a project is a matter of writing an `index.md`, not editing config.
 
 ## Install
 
@@ -51,21 +51,55 @@ The filter belongs inside the key's brackets, with the command following as a se
 
 Prints each named document in full, then every document those documents link to, one hop deep, in brief. A brief is the title, description, and `##` headings — enough to decide whether a full read is worth it. To get a linked document in full, pass it as a ref of its own.
 
-Accepted ref forms:
+Accepted ref forms (with or without `.md` extension):
 
 | Form | Meaning |
 |---|---|
-| `core/specs/alpha.md` | Bundle id and path — what `list` prints, and the canonical form |
-| `kb:core/specs/alpha.md` | The same, in the form documents use to link to each other |
+| `core/specs/alpha` (or `.md`) | Bundle id and path — what `list` prints, and the canonical form |
+| `kb:core/specs/alpha` (or `.md`) | The same, in the form documents use to link to each other |
 | `core` | A bundle root, or any directory carrying an `index.md` |
-| `/specs/alpha.md` | Bundle-absolute; resolves inside the linking document's own bundle |
-| `docs/kb/specs/alpha.md` | A plain filesystem path, as pasted from a search tool |
+| `/specs/alpha` (or `.md`) | Bundle-absolute; resolves inside the linking document's own bundle |
+| `docs/kb/specs/alpha` (or `.md`) | A plain filesystem path, as pasted from a search tool |
+
+If both a document file and a directory index match (such as `modules/lead.md` and `modules/lead/index.md`), the document file is resolved first.
 
 A bundle-absolute ref that matches more than one bundle is reported with the full refs to choose from, ready to paste back:
 
 ```
 /specs/shared.md — in 2 bundles. Use one of: core/specs/shared.md  extra/specs/shared.md
 ```
+
+### `kb broken [refs...] [options]`
+
+Audits document links for broken or unresolvable references.
+
+```bash
+crunes -p run kb broken --all
+crunes -p run kb broken core
+crunes -p run kb broken core/specs/lead
+crunes -p run kb broken -r core/specs/lead
+```
+
+- **`[refs...]`**: Specific document, directory, or bundle references to check from. When omitted, `--all` must be supplied to check all documents across bundles.
+- **`--all`**: Check all documents across all bundles.
+- **`-r, --recursive`**: Recursively crawls outbound document links until all reachable documents are verified (cycle-safe).
+- **`-d, --depth <n>`**: Maximum link hop depth from seed references (default: 1 when refs are given, 0 when verifying with `--all`).
+- **`-l, --limit <n>`**: Maximum number of documents visited during crawl (default: 500).
+- **`--brief`**: Output only summary and broken links.
+
+### `kb dead [refs...] [--all]`
+
+Finds unreferenced (orphaned) documents or directories that have no incoming links.
+
+```bash
+crunes -p run kb dead --all
+crunes -p run kb dead core
+crunes -p run kb dead core/specs
+```
+
+- **`[refs...]`**: Specific bundle or directory to check within. When omitted, `--all` must be supplied to check all bundles.
+- **`--all`**: Audit all bundles.
+- **Reporting**: Unreferenced files and directories are reported as warnings (`!`), reserving `✗` for broken links in `kb broken`.
 
 ## Configuring roots
 
