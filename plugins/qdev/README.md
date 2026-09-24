@@ -64,6 +64,14 @@ Enabling a command is not enough — it also needs the permission its work requi
 
 All six of the plugin's own grants are restated there, and that is not redundancy: **declaring `allow` replaces the plugin's list entirely rather than adding to it.** Omit them and the commands that were working stop working.
 
+`server.reload` needs one grant beyond the four above — it drives the running Quarkus process through its stdin, which is a write, not a read:
+
+```json
+"shell.job.write"
+```
+
+`shell.job.read` does not cover it; `read` and `write` are separate tokens, so enabling `server.reload` without `shell.job.write` fails on the reload itself while every other `server` command keeps working.
+
 ## Config secrets
 
 `qdev config list` and `qdev config get` read resolved runtime configuration. Quarkus does no masking, so those values can include live API keys, database passwords, and tokens — which would otherwise land in an agent's transcript. Five controls govern this:
