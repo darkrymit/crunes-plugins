@@ -1,14 +1,14 @@
 ---
 okf_version: 0.2
 kb_version: 0.1
-kb: crunes-plugins-main
+kb: crunes-plugins
 ---
 
 # crunes-plugins knowledge base
 
 The first-party marketplace: what each plugin is for, the boundary it keeps, and the rules that govern how a project widens one.
 
-Nothing here executes. Every rune in this repository runs inside the CLI's isolate under grants the installing project consented to — the runtime is [`crunes-cli-main`](kb:crunes-cli-main/index.md), and the model these plugins are written against is [`crunes-main`](kb:crunes-main/index.md).
+Nothing here executes. Every rune in this repository runs inside the CLI's isolate under grants the installing project consented to — the runtime is [`crunes-cli`](kb:crunes-cli/index.md), and the model these plugins are written against is [`crunes`](kb:crunes/index.md).
 
 **Commands, options and vars are not listed here.** Each plugin's README carries its command reference and the complete `allow` block meant to be copied, and `crunes docs rune <key>` renders the live schema from the installed version. This bundle holds what neither of those can say: why a plugin is shaped the way it is, and what goes wrong.
 
