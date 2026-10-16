@@ -23,11 +23,11 @@ export async function runConfigList(args, baseUrl) {
   const valuesUnlocked = !valuesLocked(vars)
   // --redact forces EVERY value to a marker (even non-secrets) and wins over --reveal. It only
   // acts on a shown values table -- it does NOT imply --values (no --values => keys only). Same
-  // lock family as --values, so it isn't registered when values are locked (see index.js).
+  // lock family as --values, so it isn't registered when values are locked (see index.rune.js).
   const forceRedact = !!args.redact
   const reveal = forceRedact ? false : resolveReveal(vars, args, 'list')
   // Values appear ONLY when unlocked AND --values is explicitly passed, so nothing leaks by
-  // accident. When values are locked, --values isn't even a registered flag (see index.js).
+  // accident. When values are locked, --values isn't even a registered flag (see index.rune.js).
   const showValues = valuesUnlocked && !!args.values
 
   if (!showValues) {
