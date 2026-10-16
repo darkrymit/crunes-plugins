@@ -110,8 +110,8 @@ The plugin ships one root, `docs/kb`, with grants for exactly that path. Any oth
   "runes": {
     "crunes-plugins@kb:kb": {
       "vars": { "roots": ["docs/kb", "engine/docs/kb"] },
-      "permissions": {
-        "run": {
+      "run": {
+        "permissions": {
           "allow": [
             "fs.glob:docs/kb/**/*.md",
             "fs.read:docs/kb/**",

@@ -41,8 +41,8 @@ Enabling a command is not enough — it also needs the permission its work requi
   "runes": {
     "crunes-plugins@qdev:qdev": {
       "vars": { "qdev.enable": ["logs", "health", "server.start", "server.stop"] },
-      "permissions": {
-        "run": {
+      "run": {
+        "permissions": {
           "allow": [
             "http.fetch:POST::**/q/dev-mcp",
             "http.fetch:POST::**/graphql",

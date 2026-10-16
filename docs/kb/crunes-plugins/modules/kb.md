@@ -18,8 +18,8 @@ The plugin does not scan for bundles. Every root is named in `vars.roots`, and e
 
 ```json
 "vars": { "roots": ["docs/kb/main", "engine/docs/kb"] },
-"permissions": {
-  "run": {
+"run": {
+  "permissions": {
     "allow": [
       "fs.glob:docs/kb/main/**/*.md",
       "fs.read:docs/kb/main/**",
