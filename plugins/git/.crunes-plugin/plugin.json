@@ -1,11 +1,12 @@
 {
-  "format": "1",
+  "format": "2",
   "runes": {
     "status": {
       "name": "Git Status",
       "description": "Orientation snapshot: discovers all git repositories in the workspace and reports branch, tracking, staged/unstaged files, and recent commits for each.",
-      "permissions": {
-        "run": {
+      "run": {
+        "command": "runes/status.rune.js",
+        "permissions": {
           "allow": [
             "shell.run:git -C \"*\" rev-parse --abbrev-ref HEAD",
             "shell.run:git -C \"*\" rev-list --count @{u}..HEAD",

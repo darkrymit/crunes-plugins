@@ -13,7 +13,7 @@ A plugin's manifest declares the permissions its runes need, and the user consen
 {
   "runes": {
     "crunes-plugins@kb:kb": {
-      "permissions": { "run": { "allow": ["fs.read:engine/docs/kb/**"] } }
+      "run": { "permissions": { "allow": ["fs.read:engine/docs/kb/**"] } }
     }
   }
 }

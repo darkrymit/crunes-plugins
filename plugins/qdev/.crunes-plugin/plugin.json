@@ -1,8 +1,7 @@
 {
-  "format": "1",
+  "format": "2",
   "runes": {
     "qdev": {
-      "path": "runes/qdev/index.js",
       "name": "Quarkus Dev Tools",
       "description": "Quarkus Dev UI CLI: logs, health, config, flyway, cache, scheduler, endpoints, graphql, openapi, dev-services, datasources. Widen the command set with the qdev.enable var.",
       "vars": {
@@ -23,8 +22,9 @@
           "db.tables"
         ]
       },
-      "permissions": {
-        "run": {
+      "run": {
+        "command": "runes/qdev/index.rune.js",
+        "permissions": {
           "allow": [
             "http.fetch:POST::**/q/dev-mcp",
             "http.fetch:POST::**/graphql",
