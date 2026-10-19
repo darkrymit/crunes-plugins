@@ -42,9 +42,20 @@ function headline(body) {
 
 /* ---------- discovery ---------- */
 
-/* Frontmatter in this corpus is five to seven lines. Twenty is slack enough to
- * cover a long description without reading whole documents during a scan. */
+/* A bundle-root index declares itself in a few lines, so discovery reads only the
+ * head. Documents are read whole: OKF 0.2 provenance and trust fields (sources,
+ * verified) can push a document's frontmatter past any fixed line count. */
 const HEAD_LINES = 20
+
+/* OKF 0.2 §5.3: the trust tier is derived from `verified`, never stored. A single
+ * check may be written as one mapping rather than a list. */
+function trustTier(verified) {
+  if (verified === undefined || verified === null) return 'unverified'
+  const checks = Array.isArray(verified) ? verified : [verified]
+  return checks.some(c => c && typeof c.by === 'string' && c.by.startsWith('human:'))
+    ? 'human-reviewed'
+    : 'machine-confirmed'
+}
 
 function dirOf(path) {
   const i = path.lastIndexOf('/')
@@ -60,9 +71,11 @@ async function collectDocs(paths, dir, id) {
   for (const p of paths) {
     if (!p.startsWith(dir + '/')) continue
     if (p.endsWith('/index.md')) continue
-    const head = await fs.read(p, { to: HEAD_LINES, throw: false })
-    if (head === null) continue
-    const { data, malformed } = splitFrontmatter(head)
+    /* OKF reserves log.md at every level for change history; it is never a document. */
+    if (p.endsWith('/log.md')) continue
+    const text = await fs.read(p, { throw: false })
+    if (text === null) continue
+    const { data, malformed } = splitFrontmatter(text)
     const abs = p.slice(dir.length)
     docs.push({
       ref: `${id}${abs}`,
@@ -73,6 +86,8 @@ async function collectDocs(paths, dir, id) {
       description: data && data.description ? String(data.description) : null,
       tags: data && Array.isArray(data.tags) ? data.tags : [],
       resource: data && data.resource ? String(data.resource) : null,
+      status: data && data.status ? String(data.status) : null,
+      trust: trustTier(data ? data.verified : undefined),
       malformed,
     })
   }
@@ -179,19 +194,34 @@ function renderBundle(bundle, opts) {
 
 /* ---------- links and rendering ---------- */
 
-/* Markdown links that address a document: bundle-absolute (/specs/x or /specs/x.md)
- * or cross-bundle (kb:id/specs/x or kb:id/specs/x.md). Anything else — a URL,
+/* Markdown links that address a document: bundle-absolute (/specs/x or /specs/x.md),
+ * cross-bundle (kb:id/specs/x or kb:id/specs/x.md), or relative (../specs/x.md,
+ * which OKF §6.1 allows). A relative link is returned bundle-absolute, resolved
+ * against fromAbs, the linking file's bundle-absolute path. Anything else — a URL,
  * an anchor-only link — is not a document reference and is ignored. */
-function linksIn(body) {
+function linksIn(body, fromAbs) {
   const cleanBody = body
     .replace(/```[\s\S]*?```/g, '')
     .replace(/~~~[\s\S]*?~~~/g, '')
     .replace(/`[^`\n]*`/g, '')
   const out = []
-  const re = /\]\((kb:[^)\s]+|\/[^)\s]+)\)/g
+  const re = /\]\(([^)\s]+)\)/g
   let m
   while ((m = re.exec(cleanBody)) !== null) {
-    const target = m[1].split('#')[0].replace(/\/+$/, '')
+    const raw = m[1].split('#')[0]
+    if (!raw) continue
+    let target
+    if (raw.startsWith('kb:') || raw.startsWith('/')) target = raw
+    else if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) continue
+    else {
+      const parts = dirOf(fromAbs || '/').split('/').filter(Boolean)
+      for (const seg of raw.split('/')) {
+        if (seg === '..') parts.pop()
+        else if (seg && seg !== '.') parts.push(seg)
+      }
+      target = '/' + parts.join('/')
+    }
+    target = target.replace(/\/+$/, '')
     if (!target) continue
     if (!out.includes(target)) out.push(target)
   }
@@ -203,6 +233,8 @@ function linksIn(body) {
  * source file the document is about, which is often why the agent is reading. */
 function metaLine(doc) {
   const bits = [doc.type || '(untyped)']
+  if (doc.status && doc.status !== 'stable') bits.push(doc.status)
+  bits.push(doc.trust)
   if (doc.tags.length) bits.push(doc.tags.join(', '))
   if (doc.resource) bits.push(doc.resource)
   return bits.join(' · ')
@@ -443,7 +475,7 @@ export async function run(args) {
         if (text === null) continue
         const { body } = splitFrontmatter(text)
 
-        for (const target of linksIn(body)) {
+        for (const target of linksIn(body, source.abs)) {
           /* A bundle-absolute link resolves inside the linking document's own
            * bundle, which is what bundle-absolute means. A kb: link carries its
            * own id and resolves globally. */
@@ -556,7 +588,7 @@ export async function run(args) {
         }
 
         const { body } = splitFrontmatter(text)
-        const links = linksIn(body)
+        const links = linksIn(body, source.abs)
         if (stats) stats.linksCount += links.length
 
         for (const target of links) {
@@ -667,7 +699,7 @@ export async function run(args) {
           const text = await fs.read(item.path, { throw: false })
           if (text === null) continue
           const { body } = splitFrontmatter(text)
-          for (const target of linksIn(body)) {
+          for (const target of linksIn(body, item.abs)) {
             const hit = resolveRef(target, bundles, target.startsWith('/') ? b.id : null)
             if (hit.doc) referenced.add(hit.doc.ref)
             if (hit.index) referenced.add(hit.index.ref)

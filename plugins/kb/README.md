@@ -18,8 +18,8 @@ A bundle root is an `index.md` whose frontmatter carries **`kb_version`**. Its *
 
 ```markdown
 ---
-okf_version: 1
-kb_version: 1
+okf_version: "0.2"
+kb_version: "0.2"
 kb: core
 ---
 # Core knowledge
@@ -27,7 +27,7 @@ kb: core
 The prose before the first ## heading becomes the bundle's summary.
 ```
 
-kb extends OKF. `kb_version` and `kb` are kb's own fields; `okf_version`, `type`, `title`, `description`, `tags`, and `resource` are OKF's. The OKF fields are read where present and used to enrich output — `resource` in particular names the source file a document is about — but **none of them is required**. A document whose frontmatter is missing or does not parse stays listable and readable; it is simply reported as `(untyped)`.
+kb extends OKF v0.2 (`github.com/GoogleCloudPlatform/open-knowledge-format`). `kb_version` and `kb` are kb's own fields; `okf_version`, `type`, `title`, `description`, `tags`, `resource`, `status` and `verified` are OKF's. The OKF fields are read where present and used to enrich output — `resource` names the source file a document is about, `status` and the trust tier derived from `verified` say how far to rely on it — but **none of them is required**. A document whose frontmatter is missing or does not parse stays listable and readable; it is simply reported as `(untyped)`.
 
 Only `kb_version` gates discovery. A bundle marked with `okf_version` alone is not a kb bundle and will not be found.
 
