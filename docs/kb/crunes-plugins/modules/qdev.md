@@ -10,7 +10,7 @@ resource: plugins/qdev/
 
 Reaches a running Quarkus application's Dev UI: logs, health, configuration, endpoints, dev-services, OpenAPI and GraphQL schemas, Flyway status, cache and scheduler listings, datasources.
 
-It talks to the app over HTTP and a JSON-RPC websocket, and can manage the dev server itself as a [job](kb:crunes-cli-main/modules/job.md).
+It talks to the app over HTTP and a JSON-RPC websocket, and can manage the dev server itself as a [job](kb:crunes-cli/modules/job.md).
 
 ## Observation by default
 

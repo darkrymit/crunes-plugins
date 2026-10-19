@@ -46,4 +46,4 @@ Extraction ignores fenced code blocks and inline backticks, so a path written as
 
 ## Boundary
 
-It reads markdown and reports on it. It does not enforce the [layout standard](kb:crunes-main/specs/knowledge-base.md) — it will read a bundle whose categories are invented and whose front matter is absent, and report nothing about it. Checking that an index bullet still matches its document's description is a separate concern, done by a rune in the umbrella repository.
+It reads markdown and reports on it. It does not enforce the [layout standard](kb:crunes/specs/knowledge-base.md) — it will read a bundle whose categories are invented and whose front matter is absent, and report nothing about it. Checking that an index bullet still matches its document's description is a separate concern, done by a rune in the umbrella repository.

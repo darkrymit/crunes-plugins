@@ -10,7 +10,7 @@ resource: plugins/git/
 
 Answers *where am I and what is uncommitted* across a whole workspace, not just one repository. It discovers every git repository beneath the project and reports branch, upstream tracking counts, staged and unstaged files, recent commits and stashes for each.
 
-That shape exists for this project's own layout, where three published repositories sit inside the umbrella as ignored directories — a single-repository status is the wrong answer there. See [the repository topology](kb:crunes-main/decisions/repo-topology.md).
+That shape exists for this project's own layout, where three published repositories sit inside the umbrella as ignored directories — a single-repository status is the wrong answer there. See [the repository topology](kb:crunes/decisions/repo-topology.md).
 
 ## Grants name whole command lines
 
