@@ -41,9 +41,9 @@ Each plugin is stored in `plugins/<plugin-name>/` and has a structure matching:
 ```
 plugins/<plugin-name>/
   .crunes-plugin/
-    config.json          ← Defines plugin runes, permissions, and entry points
+    plugin.json          ← Format "2": each rune names its module in a run block (and a repl block for a REPL), with its grants inside the block
   runes/
-    <rune-name>.js       ← The sandboxed ESM runnable code
+    <rune-name>.rune.js  ← The sandboxed ESM runnable code — the .rune.js suffix is what runs it in the isolate
   README.md              ← Plugin documentation and schema details
 ```
 
