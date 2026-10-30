@@ -49,6 +49,7 @@ plugins/<plugin-name>/
 
 ## Local & Manual Testing Workflow
 
+- **AUTOMATED MARKETPLACE VALIDATION** — Run `npm test` (or `node scripts/validate.js`) directly inside `crunes-plugins/` to statically validate `.crunes-plugin/marketplace.json`, all plugin manifests, file paths, and rune JavaScript syntax.
 - **REUSE EXISTING TEST SETUPS FIRST** — Before creating any new testing directory or configuration, review the existing test setups (e.g., look at directories under `scratch/` at the monorepo root) to check if there is an existing project that is suitable to reuse.
 - **FREEDOM TO CREATE NEW SANDBOXES** — If no existing environment matches your requirements, you have full freedom to create any necessary temporary directories (typically inside `scratch/` or a scratch directory) and write any configuration files (like `.crunes/config.json`) to properly manual test the target plugin's runes.
 - **Local Integration Testing:**
