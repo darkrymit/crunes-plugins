@@ -59,6 +59,22 @@
       "author": { "name": "darkrymit" },
       "source": "./plugins/media",
       "category": "global"
+    },
+    {
+      "name": "source",
+      "description": "Check whether registered outside sources (channels, repos, sites, files) moved since recorded",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/source",
+      "category": "global"
+    },
+    {
+      "name": "bucket",
+      "description": "Register folders anywhere on disk (default root ~/buckets) and find them by id, label, or README",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/bucket",
+      "category": "global"
     }
   ]
 }

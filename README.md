@@ -30,7 +30,9 @@ crunes plugin install crunes-plugins@kb
 | [`outline`](plugins/outline) | Structural code outline: collapses function and method bodies while preserving signatures, types, and classes. |
 | [`secret`](plugins/secret) | Reads `.env`, `.ini`, `.properties`, `.conf`, and `.json` files with secret values and URL credentials masked. |
 | [`session`](plugins/session) | Discovers and reads Claude Code and Antigravity session transcripts as compact Markdown. |
-| [`media`](plugins/media) | Downloads, transcribes, packs/unpacks (`.rigm`), and prepares video media and keyframe timelines. |
+| [`media`](plugins/media) | Downloads, transcribes, packs/unpacks (`.mcf`), and prepares video media and keyframe timelines. |
+| [`source`](plugins/source) | Checks whether registered outside sources (channels, git repos, sites, files) moved since last recorded. |
+| [`bucket`](plugins/bucket) | Registers folders anywhere on disk (default root `~/buckets`) and finds them by id, label, or README. |
 
 ## Project Plugins
 

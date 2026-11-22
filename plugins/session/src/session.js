@@ -122,7 +122,7 @@ function truncateSandwich(text, { headLines = 4, tailLines = 4, maxChars = 550, 
 
   const rawLines = trimmed.split(/\r?\n/);
   const inspectHint = step !== null && shortId
-    ? `; run \`rig session inspect ${shortId} ${step}\` for full step`
+    ? `; run \`crunes -p run session inspect ${shortId} ${step}\` for full step`
     : '';
 
   if (rawLines.length <= headLines + tailLines && trimmed.length <= maxChars) {
@@ -1653,7 +1653,7 @@ function formatDigestMarkdown(parsed, opts = {}) {
           }
           if (omittedRoutine > 0) {
             lines.push(
-              `- *(... ${omittedRoutine} routine exit-0 tool runs in steps ${stepLabel(midStart, midEnd)} omitted; run \`rig session inspect ${meta.shortId} ${midStart}..${midEnd}\` to expand ...)*`
+              `- *(... ${omittedRoutine} routine exit-0 tool runs in steps ${stepLabel(midStart, midEnd)} omitted; run \`crunes -p run session inspect ${meta.shortId} ${midStart}..${midEnd}\` to expand ...)*`
             );
           }
           for (const run of tailRuns) appendRunWithOptionalOutput(run);

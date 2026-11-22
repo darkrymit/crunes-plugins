@@ -102,10 +102,10 @@ describe('media.rune.js (E2E isolate)', () => {
       fs.mkdirSync(path.join(tmp, 'bundle'), { recursive: true })
       fs.writeFileSync(path.join(tmp, 'bundle', 'timeline.md'), '[00:00.0] hello\n', 'utf8')
 
-      runCrunes(tmp, ['-p', 'run', 'media', 'pack', 'bundle', '-o', 'clip.rigm'])
-      assert.ok(fs.existsSync(path.join(tmp, 'clip.rigm')))
+      runCrunes(tmp, ['-p', 'run', 'media', 'pack', 'bundle', '-o', 'clip.mcf'])
+      assert.ok(fs.existsSync(path.join(tmp, 'clip.mcf')))
 
-      runCrunes(tmp, ['-p', 'run', 'media', 'unpack', 'clip.rigm', '-o', 'restored'])
+      runCrunes(tmp, ['-p', 'run', 'media', 'unpack', 'clip.mcf', '-o', 'restored'])
       assert.equal(fs.readFileSync(path.join(tmp, 'restored', 'timeline.md'), 'utf8'), '[00:00.0] hello\n')
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true })

@@ -1,0 +1,26 @@
+{
+  "format": "1",
+  "runes": {
+    "source": {
+      "name": "Source Tracker",
+      "description": "Check whether registered outside sources (channels, repos, sites, files) moved since recorded",
+      "run": {
+        "command": "src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "fs.read:**",
+            "fs.write:**",
+            "fs.glob:**::*",
+            "shell.run:git *",
+            "shell.run:yt-dlp *",
+            "shell.run:uvx *",
+            "shell.run:uv *",
+            "shell.run:where.exe *",
+            "shell.run:which *"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

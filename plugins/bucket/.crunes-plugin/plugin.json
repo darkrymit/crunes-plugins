@@ -1,0 +1,40 @@
+{
+  "format": "1",
+  "runes": {
+    "bucket": {
+      "name": "Bucket Registry",
+      "description": "Register folders anywhere on disk (default root ~/buckets) and find them by id, label, or README",
+      "run": {
+        "command": "src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "fs.read:**",
+            "fs.read:/**",
+            "fs.read:C:/**",
+            "fs.read:D:/**",
+            "fs.read:~/.crunes/buckets.json",
+            "fs.write:**",
+            "fs.write:/**",
+            "fs.write:C:/**",
+            "fs.write:D:/**",
+            "fs.write:~/.crunes/buckets.json",
+            "fs.mkdir:**",
+            "fs.mkdir:/**",
+            "fs.mkdir:C:/**",
+            "fs.mkdir:D:/**",
+            "fs.rm:**",
+            "fs.rm:/**",
+            "fs.rm:C:/**",
+            "fs.rm:D:/**",
+            "fs.glob:**::*",
+            "fs.glob:/**::*",
+            "fs.glob:C:/**::*",
+            "fs.glob:D:/**::*",
+            "shell.run:git *"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

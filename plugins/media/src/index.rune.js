@@ -124,16 +124,16 @@ export function args(b) {
        .option('--filler <seconds>', 'Filler frame interval in seconds', '5.0')
        .option('--whisper', 'Force faster-whisper transcription even when subtitles exist', false)
        .option('--skip-frames', 'Skip ffmpeg frame extraction', false)
-       .option('--pack <file>', 'Package output into a .rigm zip archive')
+       .option('--pack <file>', 'Package output into a .mcf zip archive')
        .option('--format <fmt>', 'Stream format selector for yt-dlp', STANDARD_STREAM_FORMAT)
        .option('--dry-run', 'Show planned actions without downloading or extracting', false)
     })
-    .command('pack', 'Pack a prepared media folder into a portable .rigm zip archive', c => {
+    .command('pack', 'Pack a prepared media folder into a portable .mcf zip archive', c => {
       c.positional('<dir>', 'Prepared media folder')
-       .option('-o, --out <file>', 'Output .rigm archive path')
+       .option('-o, --out <file>', 'Output .mcf archive path')
     })
-    .command('unpack', 'Unpack a .rigm zip archive into a target directory', c => {
-      c.positional('<archive>', 'Input .rigm archive path')
+    .command('unpack', 'Unpack a .mcf zip archive into a target directory', c => {
+      c.positional('<archive>', 'Input .mcf archive path')
        .option('-o, --out <dir>', 'Destination directory')
     })
     .command('frames', 'Extract dense frame sequence from a time range', c => {
