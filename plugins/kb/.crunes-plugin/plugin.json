@@ -10,7 +10,7 @@
         ]
       },
       "run": {
-        "command": "runes/kb.rune.js",
+        "command": "src/index.rune.js",
         "permissions": {
           "allow": [
             "fs.glob:docs/kb/**/*.md",

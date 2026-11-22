@@ -1,0 +1,18 @@
+{
+  "format": "1",
+  "runes": {
+    "check": {
+      "name": "Token Plugin Check",
+      "description": "Run token plugin unit and E2E tests",
+      "run": {
+        "command": ".crunes/runes/check/src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "shell.run:node --test test/token.test.js"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

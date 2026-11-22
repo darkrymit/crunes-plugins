@@ -23,7 +23,7 @@
         ]
       },
       "run": {
-        "command": "runes/qdev/index.rune.js",
+        "command": "src/index.rune.js",
         "permissions": {
           "allow": [
             "http.fetch:POST::**/q/dev-mcp",

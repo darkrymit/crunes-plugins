@@ -1,0 +1,20 @@
+{
+  "format": "1",
+  "runes": {
+    "token": {
+      "name": "Token Counter",
+      "description": "Estimate token counts (OpenAI & Claude) and inspect context weight before reading",
+      "run": {
+        "command": "src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "fs.read:.",
+            "fs.read:**",
+            "fs.glob:**::*"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

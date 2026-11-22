@@ -5,20 +5,12 @@
   "owner": { "name": "darkrymit" },
   "plugins": [
     {
-      "name": "git",
-      "description": "Git context runes",
-      "version": "1.0.0",
-      "author": { "name": "darkrymit" },
-      "source": "./plugins/git",
-      "category": "runes"
-    },
-    {
       "name": "kb",
       "description": "Query knowledge bundles: what exists, what is in them, and their text",
       "version": "1.0.0",
       "author": { "name": "darkrymit" },
       "source": "./plugins/kb",
-      "category": "runes"
+      "category": "project"
     },
     {
       "name": "qdev",
@@ -26,7 +18,15 @@
       "version": "1.0.0",
       "author": { "name": "darkrymit" },
       "source": "./plugins/qdev",
-      "category": "runes"
+      "category": "project"
+    },
+    {
+      "name": "token",
+      "description": "Estimate token counts (OpenAI & Claude) and inspect context weight before reading",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/token",
+      "category": "global"
     }
   ]
 }

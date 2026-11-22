@@ -1,0 +1,20 @@
+{
+  "format": "1",
+  "runes": {
+    "check": {
+      "name": "Marketplace & Plugin Check",
+      "description": "Validate marketplace.json, plugin manifests, JS syntax, and dispatch per-plugin check runes",
+      "run": {
+        "command": ".crunes/runes/check/src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "fs.read:**",
+            "shell.run:node --check *",
+            "rune.run:check"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

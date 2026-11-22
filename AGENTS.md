@@ -18,7 +18,7 @@ Before brainstorming, planning, or touching any code:
 - **THIS IS AN INDEPENDENT GIT REPOSITORY** — `crunes-plugins` is its own Git repository separate from the monorepo root. **ALL git operations (commits, branches, worktrees, status, diffs) must be run directly inside `crunes-plugins/`!**
 - **MARKETPLACE REGISTRATION MANDATORY** — This entire repository functions as a single Crunes plugin marketplace. Any new plugin added MUST be registered in `.crunes-plugin/marketplace.json` at the root before it can be resolved or cached by the CLI.
 - **STRICT PLUGIN BOUNDARIES** — All code for a plugin must live entirely within `plugins/<plugin-name>/`. Do not import or write files outside this directory.
-- **SANDBOX COMPATIBILITY REQUIRED** — Rune code inside `plugins/<plugin-name>/runes/` is executed by the Crunes CLI inside isolated-vm sandboxes. It **cannot** access standard Node.js built-in modules directly. All I/O operations must use the standard `utils` API injected by the CLI runtime.
+- **RUNE RUNTIME MODES** — `*.rune.js` modules run inside `isolated-vm` sandboxes using `@utils` (no Node built-ins; governed by `run.permissions`). Native scripts (`.js`/`.mjs`/`.cjs`, `.py`, `.sh`) run directly on the host via `crunes plugin trust` and must omit `run.permissions`.
 - **ONLY READ FILES THAT IMPACT IMPLEMENTATION** — Ask "will this file's contents change my implementation approach?" before reading files inside a plugin to save token context.
 
 ## Coding Principles
@@ -37,19 +37,23 @@ Transform vague tasks into verifiable goals before starting: "fix the bug" → "
 
 ## Marketplace Architecture
 
-Each plugin is stored in `plugins/<plugin-name>/` and has a structure matching:
+Each plugin lives in `plugins/<plugin-name>/` using `{src,test}/` for 1-rune plugins, or `runes/<rune-name>/{src,test}/` when a plugin bundles multiple runes:
 ```
-plugins/<plugin-name>/
-  .crunes-plugin/
-    plugin.json          ← Format "1": each rune names its module in a run block (and a repl block for a REPL), with its grants inside the block
-  runes/
-    <rune-name>.rune.js  ← The sandboxed ESM runnable code — the .rune.js suffix is what runs it in the isolate
-  README.md              ← Plugin documentation and schema details
+plugins/<plugin-name>/                 (1-rune plugin)
+  .crunes-plugin/plugin.json           ← Format "1": "command": "src/index.rune.js"
+  src/
+    index.rune.js                      ← Isolate entrypoint (.rune.js) or native script
+    <helper>.js                        ← Pure logic (zero @utils imports so node --test can import)
+  test/
+    <plugin-name>.test.js              ← Unit tests for src/ + E2E crunes isolate runs
+  README.md
+
+plugins/<plugin-name>/runes/<rune>/    (multi-rune plugin: same {src,test}/ per rune)
 ```
 
 ## Local & Manual Testing Workflow
 
-- **AUTOMATED MARKETPLACE VALIDATION** — Run `npm test` (or `node scripts/validate.js`) directly inside `crunes-plugins/` to statically validate `.crunes-plugin/marketplace.json`, all plugin manifests, file paths, and rune JavaScript syntax.
+- **DOGFOOD CHECK RUNE** — Run `crunes -p run check` (or `crunes -p run check --only <plugin>`) directly inside `crunes-plugins/` to validate `marketplace.json`, all plugin manifests, file paths, JS syntax, and all `plugins/*/test/*.test.js` + `plugins/*/runes/*/test/*.test.js` suites.
 - **REUSE EXISTING TEST SETUPS FIRST** — Before creating any new testing directory or configuration, review the existing test setups (e.g., look at directories under `scratch/` at the monorepo root) to check if there is an existing project that is suitable to reuse.
 - **FREEDOM TO CREATE NEW SANDBOXES** — If no existing environment matches your requirements, you have full freedom to create any necessary temporary directories (typically inside `scratch/` or a scratch directory) and write any configuration files (like `.crunes/config.json`) to properly manual test the target plugin's runes.
 - **Local Integration Testing:**
