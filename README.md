@@ -32,7 +32,7 @@ crunes plugin install crunes-plugins@kb
 | [`session`](plugins/session) | Discovers and reads Claude Code and Antigravity session transcripts as compact Markdown. |
 | [`media`](plugins/media) | Downloads, transcribes, packs/unpacks (`.mcf`), and prepares video media and keyframe timelines. |
 | [`source`](plugins/source) | Checks whether registered outside sources (channels, git repos, sites, files) moved since last recorded. |
-| [`bucket`](plugins/bucket) | Registers folders anywhere on disk (default root `~/buckets`) and finds them by id, label, or README. |
+| [`bucket`](plugins/bucket) | Registers folders anywhere on disk (default root `~/.bucket`) and finds them by id, label, or README. |
 
 ## Project Plugins
 

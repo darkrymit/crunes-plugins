@@ -15,8 +15,8 @@ import {
   withRegistry,
 } from './bucket.js'
 
-const REGISTRY_LOCATION = '~/.crunes/buckets.json'
-const DEFAULT_ROOT = '~/buckets'
+const REGISTRY_LOCATION = '~/.bucket/buckets.json'
+const DEFAULT_ROOT = '~/.bucket'
 
 function row(b) {
   const title = b.readme && b.readme.title ? `  ${b.readme.title}` : ''
@@ -92,7 +92,7 @@ export function args(b) {
     .option('-h, --help', 'Show help')
     .command('new', 'Create a folder for a new bucket and register it', c => {
       c.positional('<id>', 'Bucket id')
-       .option('--in <dir>', 'Parent folder (default: ~/buckets)')
+       .option('--in <dir>', 'Parent folder (default: ~/.bucket)')
        .option('--git', 'Run git init in the new folder', false)
        .option('-l, --label <name>', 'Label to attach (repeatable)')
     })

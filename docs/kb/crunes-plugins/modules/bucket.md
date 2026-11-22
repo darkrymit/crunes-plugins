@@ -1,14 +1,14 @@
 ---
 type: module
 title: bucket
-description: Global isolate registry for folders anywhere on disk (default root ~/buckets), searchable by id, label, or README.
+description: Global isolate registry for folders anywhere on disk (default root ~/.bucket), searchable by id, label, or README.
 tags: [plugin, global, bucket]
 resource: plugins/bucket/
 ---
 
 # bucket
 
-Indexes folders anywhere on disk in `~/.crunes/buckets.json` (with `~/buckets` as the default root for `new`) and extracts README titles and summaries on read.
+Indexes folders anywhere on disk in `~/.bucket/buckets.json` (with `~/.bucket` as the default root for `new`) and extracts README titles and summaries on read.
 
 ## Usage
 
@@ -22,4 +22,4 @@ Installed globally with `-g` (`crunes plugin install crunes-plugins@bucket -g`).
 
 ## Permissions
 
-Declares `fs.read`, `fs.write` (on `**` and `~/.crunes/buckets.json`), `fs.mkdir:**`, `fs.rm:**`, `fs.glob:**::*`, and `shell.run:git *`.
+Declares `fs.read`, `fs.write` (on `**` and `~/.bucket/buckets.json`), `fs.mkdir:**`, `fs.rm:**`, `fs.glob:**::*`, and `shell.run:git *`.

@@ -54,12 +54,12 @@ describe('bucket.rune.js (E2E isolate)', () => {
                     'fs.read:/**',
                     'fs.read:C:/**',
                     'fs.read:D:/**',
-                    'fs.read:~/.crunes/buckets.json',
+                    'fs.read:~/.bucket/buckets.json',
                     'fs.write:**',
                     'fs.write:/**',
                     'fs.write:C:/**',
                     'fs.write:D:/**',
-                    'fs.write:~/.crunes/buckets.json',
+                    'fs.write:~/.bucket/buckets.json',
                     'fs.mkdir:**',
                     'fs.mkdir:/**',
                     'fs.mkdir:C:/**',
@@ -97,10 +97,11 @@ describe('bucket.rune.js (E2E isolate)', () => {
 
       const newOut = runCrunes(workDir, ['-p', 'run', 'bucket', 'new', 'notes', '--label', 'docs'], env)
       assert.match(newOut, /notes/)
-      assert.ok(fs.existsSync(path.join(homeDir, 'buckets', 'notes')))
+      assert.ok(fs.existsSync(path.join(homeDir, '.bucket', 'notes')))
+      assert.ok(fs.existsSync(path.join(homeDir, '.bucket', 'buckets.json')))
 
       fs.writeFileSync(
-        path.join(homeDir, 'buckets', 'notes', 'README.md'),
+        path.join(homeDir, '.bucket', 'notes', 'README.md'),
         '# Notes Bucket\n\nPersonal engineering notes.\n',
         'utf8'
       )
@@ -110,7 +111,7 @@ describe('bucket.rune.js (E2E isolate)', () => {
       assert.match(findOut, /Notes Bucket/)
 
       const whereOut = runCrunes(workDir, ['-p', 'run', 'bucket', 'where', 'docs'], env)
-      assert.match(whereOut, /buckets\/notes/)
+      assert.match(whereOut, /\.bucket\/notes/)
 
       runCrunes(workDir, ['-p', 'run', 'bucket', 'label', 'add', 'notes', 'archive'], env)
       const labelList = runCrunes(workDir, ['-p', 'run', 'bucket', 'label', 'list'], env)
@@ -118,7 +119,7 @@ describe('bucket.rune.js (E2E isolate)', () => {
 
       const delOut = runCrunes(workDir, ['-p', 'run', 'bucket', 'delete', 'notes', '--yes'], env)
       assert.match(delOut, /deleted/)
-      assert.ok(!fs.existsSync(path.join(homeDir, 'buckets', 'notes')))
+      assert.ok(!fs.existsSync(path.join(homeDir, '.bucket', 'notes')))
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true })
     }

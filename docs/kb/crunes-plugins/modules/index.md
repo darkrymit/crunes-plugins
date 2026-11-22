@@ -4,7 +4,7 @@ One page per plugin: what it does and the boundary it keeps.
 
 ## Documents
 
-* [bucket](/modules/bucket.md) - Global isolate registry for folders anywhere on disk (default root `~/buckets`), searchable by id, label, or README.
+* [bucket](/modules/bucket.md) - Global isolate registry for folders anywhere on disk (default root `~/.bucket`), searchable by id, label, or README.
 * [kb](/modules/kb.md) - Reads OKF knowledge bundles — what exists, what is in them and their text — from roots that must be configured rather than discovered, because a grant matches the pattern a rune passes and not the paths it resolves.
 * [media](/modules/media.md) - Global isolate pipeline for downloading video media, extracting keyframes, transcribing speech, and packing `.mcf` archives.
 * [outline](/modules/outline.md) - Global structural code outliner that collapses function/method bodies for brace languages and Python, with piped `stdin` support.

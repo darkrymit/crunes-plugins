@@ -70,7 +70,7 @@
     },
     {
       "name": "bucket",
-      "description": "Register folders anywhere on disk (default root ~/buckets) and find them by id, label, or README",
+      "description": "Register folders anywhere on disk (default root ~/.bucket) and find them by id, label, or README",
       "version": "1.0.0",
       "author": { "name": "darkrymit" },
       "source": "./plugins/bucket",

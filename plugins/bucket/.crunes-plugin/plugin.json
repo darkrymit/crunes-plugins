@@ -3,7 +3,7 @@
   "runes": {
     "bucket": {
       "name": "Bucket Registry",
-      "description": "Register folders anywhere on disk (default root ~/buckets) and find them by id, label, or README",
+      "description": "Register folders anywhere on disk (default root ~/.bucket) and find them by id, label, or README",
       "run": {
         "command": "src/index.rune.js",
         "permissions": {
@@ -12,12 +12,12 @@
             "fs.read:/**",
             "fs.read:C:/**",
             "fs.read:D:/**",
-            "fs.read:~/.crunes/buckets.json",
+            "fs.read:~/.bucket/buckets.json",
             "fs.write:**",
             "fs.write:/**",
             "fs.write:C:/**",
             "fs.write:D:/**",
-            "fs.write:~/.crunes/buckets.json",
+            "fs.write:~/.bucket/buckets.json",
             "fs.mkdir:**",
             "fs.mkdir:/**",
             "fs.mkdir:C:/**",
