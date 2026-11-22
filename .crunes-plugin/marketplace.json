@@ -35,6 +35,14 @@
       "author": { "name": "darkrymit" },
       "source": "./plugins/outline",
       "category": "global"
+    },
+    {
+      "name": "secret",
+      "description": "Read config and env files with secret values and URL credentials masked",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/secret",
+      "category": "global"
     }
   ]
 }

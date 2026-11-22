@@ -28,6 +28,7 @@ crunes plugin install crunes-plugins@kb
 |---|---|
 | [`token`](plugins/token) | Estimates token counts (OpenAI & Claude) and checks context budgets for files, directories, or piped `stdin`. |
 | [`outline`](plugins/outline) | Structural code outline: collapses function and method bodies while preserving signatures, types, and classes. |
+| [`secret`](plugins/secret) | Reads `.env`, `.ini`, `.properties`, `.conf`, and `.json` files with secret values and URL credentials masked. |
 
 ## Project Plugins
 
