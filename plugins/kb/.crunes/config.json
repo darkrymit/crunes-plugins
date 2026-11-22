@@ -1,0 +1,18 @@
+{
+  "format": "1",
+  "runes": {
+    "check": {
+      "name": "KB Plugin Check",
+      "description": "Run kb plugin E2E tests",
+      "run": {
+        "command": ".crunes/runes/check/src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "shell.run:node --test test/kb.test.js"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

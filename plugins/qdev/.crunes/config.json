@@ -1,0 +1,18 @@
+{
+  "format": "1",
+  "runes": {
+    "check": {
+      "name": "Qdev Plugin Check",
+      "description": "Run qdev plugin unit and E2E tests",
+      "run": {
+        "command": ".crunes/runes/check/src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "shell.run:node --test test/qdev.test.js"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "format": "1",
+  "runes": {
+    "outline": {
+      "name": "Code Outline",
+      "description": "Structural code outline: collapse function and method bodies (strips comments & imports by default)",
+      "run": {
+        "command": "src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "fs.read:.",
+            "fs.read:**"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

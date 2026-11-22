@@ -27,6 +27,14 @@
       "author": { "name": "darkrymit" },
       "source": "./plugins/token",
       "category": "global"
+    },
+    {
+      "name": "outline",
+      "description": "Structural code outline: collapse function and method bodies (strips comments & imports by default)",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/outline",
+      "category": "global"
     }
   ]
 }
