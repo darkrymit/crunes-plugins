@@ -51,6 +51,14 @@
       "author": { "name": "darkrymit" },
       "source": "./plugins/session",
       "category": "global"
+    },
+    {
+      "name": "media",
+      "description": "Download, transcribe, pack/unpack, and prepare video media and keyframe timelines",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/media",
+      "category": "global"
     }
   ]
 }

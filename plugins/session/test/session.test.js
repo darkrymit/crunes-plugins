@@ -12,10 +12,43 @@ import {
   normalizeFormat,
   parseSession,
   parseStepRangeSpec,
-} from '../src/session.mjs'
+} from '../src/session.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const entryPath = path.resolve(__dirname, '../src/index.mjs')
+const srcDir = path.resolve(__dirname, '../src')
+const localCrunesCli = path.resolve(__dirname, '../../../../crunes-cli/dist/cli.js')
+
+function makeNodeIo() {
+  return {
+    exists: async p => fs.existsSync(p),
+    stat: async p => {
+      try {
+        const st = fs.statSync(p)
+        return { size: st.size, mtimeMs: st.mtimeMs, isFile: st.isFile(), isDirectory: st.isDirectory() }
+      } catch {
+        return null
+      }
+    },
+    readText: async p => fs.readFileSync(p, 'utf8'),
+    readHeadTail: async p => {
+      const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+      return { headLines: lines.slice(0, 80), tailLines: lines.slice(-80) }
+    },
+    glob: async (pattern, cwd) => {
+      const out = []
+      const walk = (dir, prefix) => {
+        for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          const rel = prefix ? `${prefix}/${ent.name}` : ent.name
+          const full = path.join(dir, ent.name)
+          if (ent.isDirectory()) walk(full, rel)
+          else if (pattern === '**/*.jsonl' ? ent.name.endsWith('.jsonl') : ent.name === 'transcript.jsonl') out.push(rel)
+        }
+      }
+      if (fs.existsSync(cwd)) walk(cwd, '')
+      return out
+    },
+  }
+}
 
 function makeAgyFixture(tmp) {
   const convId = '11111111-2222-3333-4444-555555555555'
@@ -48,27 +81,35 @@ function makeAgyFixture(tmp) {
   return convId
 }
 
-describe('session.mjs (unit + fixture)', () => {
+function runCrunes(cwd, args, env) {
+  const useLocal = fs.existsSync(localCrunesCli)
+  const cmd = useLocal ? process.execPath : 'crunes'
+  const fullArgs = useLocal ? [localCrunesCli, ...args] : args
+  return execFileSync(cmd, fullArgs, { cwd, env, encoding: 'utf8' })
+}
+
+describe('session.js (unit + fixture)', () => {
   it('parses step ranges and normalizes format names', () => {
     assert.deepEqual(parseStepRangeSpec('1,3..5', 10), [1, 3, 4, 5])
     assert.equal(normalizeFormat('compact'), 'compact')
     assert.equal(normalizeFormat('FULL'), 'full')
   })
 
-  it('lists, parses, digests, and inspects an Antigravity transcript fixture', () => {
+  it('lists, parses, digests, and inspects an Antigravity transcript fixture', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-test-'))
     try {
       makeAgyFixture(tmp)
-      const sessions = listSessions({ homeDir: tmp, all: true, harness: 'agy' })
+      const io = makeNodeIo()
+      const sessions = await listSessions({ io, homeDir: tmp, all: true, harness: 'agy' })
       assert.equal(sessions.length, 1)
       assert.equal(sessions[0].shortId, '11111111')
 
-      const parsed = parseSession('11111111', { homeDir: tmp, harness: 'agy' })
+      const parsed = await parseSession('11111111', { io, homeDir: tmp, harness: 'agy' })
       const digest = formatDigestMarkdown(parsed, { format: 'compact' })
       assert.match(digest, /Check the status of the demo workspace/)
       assert.match(digest, /Everything in the demo workspace is clean/)
 
-      const inspected = formatInspectMarkdown(parsed, '1..2', { format: 'extended' })
+      const inspected = await formatInspectMarkdown(parsed, '1..2', { io, format: 'extended' })
       assert.match(inspected, /Step #1/)
       assert.match(inspected, /Step #2/)
     } finally {
@@ -77,31 +118,46 @@ describe('session.mjs (unit + fixture)', () => {
   })
 })
 
-describe('session CLI (E2E native)', () => {
-  it('runs list, digest, and inspect via src/index.mjs', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-cli-'))
+describe('session.rune.js (E2E isolate)', () => {
+  it('runs list, digest, and inspect inside isolated-vm using ~/ grants', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-iso-'))
     try {
       makeAgyFixture(tmp)
-      const env = { ...process.env, HOME: tmp, USERPROFILE: tmp }
+      fs.mkdirSync(path.join(tmp, '.crunes', 'runes'), { recursive: true })
+      fs.cpSync(srcDir, path.join(tmp, '.crunes', 'runes', 'session'), { recursive: true })
+      fs.writeFileSync(
+        path.join(tmp, '.crunes', 'config.json'),
+        JSON.stringify({
+          format: '1',
+          runes: {
+            session: {
+              run: {
+                command: '.crunes/runes/session/index.rune.js',
+                permissions: {
+                  allow: [
+                    'fs.glob:~/.claude/projects::**/*.jsonl',
+                    'fs.glob:~/.gemini/antigravity/brain::**/transcript.jsonl',
+                    'fs.read:~/.claude/projects/**',
+                    'fs.read:~/.gemini/antigravity/brain/**',
+                    'fs.read:**',
+                  ],
+                },
+              },
+            },
+          },
+        }),
+        'utf8'
+      )
 
-      const listOut = execFileSync(process.execPath, [entryPath, 'list', '--all', '--harness', 'agy'], {
-        env,
-        encoding: 'utf8',
-      })
+      const env = { ...process.env, HOME: tmp, USERPROFILE: tmp }
+      const listOut = runCrunes(tmp, ['-p', 'run', 'session', 'list', '--all', '--harness', 'agy'], env)
       assert.match(listOut, /11111111/)
       assert.match(listOut, /agy/)
 
-      const digestOut = execFileSync(process.execPath, [entryPath, 'digest', '11111111', '--harness', 'agy'], {
-        env,
-        encoding: 'utf8',
-      })
+      const digestOut = runCrunes(tmp, ['-p', 'run', 'session', 'digest', '11111111', '--harness', 'agy'], env)
       assert.match(digestOut, /Everything in the demo workspace is clean/)
 
-      const inspectOut = execFileSync(
-        process.execPath,
-        [entryPath, 'inspect', '11111111', '1..2', '--harness', 'agy'],
-        { env, encoding: 'utf8' }
-      )
+      const inspectOut = runCrunes(tmp, ['-p', 'run', 'session', 'inspect', '11111111', '1..2', '--harness', 'agy'], env)
       assert.match(inspectOut, /Step #2/)
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true })

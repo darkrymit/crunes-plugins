@@ -29,7 +29,8 @@ crunes plugin install crunes-plugins@kb
 | [`token`](plugins/token) | Estimates token counts (OpenAI & Claude) and checks context budgets for files, directories, or piped `stdin`. |
 | [`outline`](plugins/outline) | Structural code outline: collapses function and method bodies while preserving signatures, types, and classes. |
 | [`secret`](plugins/secret) | Reads `.env`, `.ini`, `.properties`, `.conf`, and `.json` files with secret values and URL credentials masked. |
-| [`session`](plugins/session) | Discovers and reads Claude Code and Antigravity session transcripts as compact Markdown (native script, requires `crunes plugin trust`). |
+| [`session`](plugins/session) | Discovers and reads Claude Code and Antigravity session transcripts as compact Markdown. |
+| [`media`](plugins/media) | Downloads, transcribes, packs/unpacks (`.rigm`), and prepares video media and keyframe timelines. |
 
 ## Project Plugins
 

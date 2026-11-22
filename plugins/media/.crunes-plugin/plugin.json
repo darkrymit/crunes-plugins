@@ -1,0 +1,27 @@
+{
+  "format": "1",
+  "runes": {
+    "media": {
+      "name": "Media Pipeline",
+      "description": "Download, transcribe, pack/unpack, and prepare video media and keyframe timelines",
+      "run": {
+        "command": "src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "fs.read:**",
+            "fs.write:**",
+            "fs.glob:**::*",
+            "shell.run:yt-dlp *",
+            "shell.run:uvx *",
+            "shell.run:uv *",
+            "shell.run:ffmpeg *",
+            "shell.run:python *",
+            "shell.run:where.exe *",
+            "shell.run:which *"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

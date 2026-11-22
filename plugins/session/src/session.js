@@ -1,6 +1,24 @@
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
+const path = {
+  basename(p, ext = '') {
+    const clean = String(p || '').replace(/[/\\]+$/, '');
+    const idx = Math.max(clean.lastIndexOf('/'), clean.lastIndexOf('\\'));
+    const base = idx === -1 ? clean : clean.slice(idx + 1);
+    return ext && base.endsWith(ext) ? base.slice(0, -ext.length) : base;
+  },
+  dirname(p) {
+    const clean = String(p || '').replace(/[/\\]+$/, '');
+    const idx = Math.max(clean.lastIndexOf('/'), clean.lastIndexOf('\\'));
+    if (idx === -1) return '.';
+    return idx === 0 ? clean.slice(0, 1) : clean.slice(0, idx);
+  },
+  join(...parts) {
+    return parts
+      .filter(Boolean)
+      .map((s, i) => (i === 0 ? String(s).replace(/[/\\]+$/, '') : String(s).replace(/^[/\\]+|[/\\]+$/g, '')))
+      .filter(Boolean)
+      .join('/');
+  },
+};
 
 /**
  * Dual-harness session reader for Claude Code (~/.claude/projects/<project>/<id>.jsonl)
@@ -14,44 +32,16 @@ import path from 'node:path'
  *   3. inspect — full un-truncated step drill-down (with transcript_full.jsonl fallback)
  */
 
-const HEAD_READ_BYTES = 32768;
-const TAIL_READ_BYTES = 32768;
-
 function defaultDirs(opts = {}) {
-  const home = opts.homeDir || os.homedir();
+  const home = opts.homeDir || '~';
   return {
     claudeDir: opts.claudeDir || path.join(home, '.claude', 'projects'),
     agyDir: opts.agyDir || path.join(home, '.gemini', 'antigravity', 'brain')
   };
 }
 
-function readHeadAndTailLines(filePath, size) {
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    if (size <= HEAD_READ_BYTES + TAIL_READ_BYTES) {
-      const buf = Buffer.alloc(size);
-      fs.readSync(fd, buf, 0, size, 0);
-      const lines = buf.toString('utf8').split('\n').map(l => l.trim()).filter(Boolean);
-      return { headLines: lines, tailLines: lines, allRead: true };
-    }
-    const headBuf = Buffer.alloc(HEAD_READ_BYTES);
-    fs.readSync(fd, headBuf, 0, HEAD_READ_BYTES, 0);
-    const tailBuf = Buffer.alloc(TAIL_READ_BYTES);
-    fs.readSync(fd, tailBuf, 0, TAIL_READ_BYTES, size - TAIL_READ_BYTES);
-
-    const headRaw = headBuf.toString('utf8').split('\n');
-    headRaw.pop(); // drop potentially partial last line of head chunk
-    const tailRaw = tailBuf.toString('utf8').split('\n');
-    tailRaw.shift(); // drop potentially partial first line of tail chunk
-
-    return {
-      headLines: headRaw.map(l => l.trim()).filter(Boolean),
-      tailLines: tailRaw.map(l => l.trim()).filter(Boolean),
-      allRead: false
-    };
-  } finally {
-    fs.closeSync(fd);
-  }
+async function readHeadAndTailLines(io, filePath) {
+  return io.readHeadTail(filePath);
 }
 
 function cleanUserText(raw) {
@@ -295,11 +285,11 @@ function normalizeToolCall(rawName, rawArgs, cwd) {
   };
 }
 
-function summarizeClaudeFile(filePath, stat) {
+async function summarizeClaudeFile(io, filePath, stat) {
   const rawBase = path.basename(filePath, '.jsonl');
   const inSubagentsDir = path.basename(path.dirname(filePath)) === 'subagents';
   let id = inSubagentsDir ? rawBase.replace(/^agent-/, '') : rawBase;
-  const { headLines, tailLines } = readHeadAndTailLines(filePath, stat.size);
+  const { headLines, tailLines } = await readHeadAndTailLines(io, filePath);
 
   let cwd = null;
   let branch = null;
@@ -314,8 +304,8 @@ function summarizeClaudeFile(filePath, stat) {
   if (inSubagentsDir) {
     const metaPath = filePath.replace(/\.jsonl$/, '.meta.json');
     try {
-      if (fs.existsSync(metaPath)) {
-        const metaObj = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      if (await io.exists(metaPath)) {
+        const metaObj = JSON.parse(await io.readText(metaPath));
         if (metaObj.description) {
           title = `[${metaObj.agentType || 'subagent'}] ${metaObj.description}`;
         }
@@ -385,14 +375,14 @@ function summarizeClaudeFile(filePath, stat) {
   };
 }
 
-function summarizeAgyFile(filePath, stat) {
+async function summarizeAgyFile(io, filePath, stat) {
   const logsDir = path.dirname(filePath);
   const sysGenDir = path.dirname(logsDir);
   const brainFolder = path.dirname(sysGenDir);
   const id = path.basename(brainFolder);
   const fullPath = path.join(logsDir, 'transcript_full.jsonl');
 
-  const { headLines, tailLines } = readHeadAndTailLines(filePath, stat.size);
+  const { headLines, tailLines } = await readHeadAndTailLines(io, filePath);
 
   let project = null;
   let firstPrompt = null;
@@ -470,68 +460,51 @@ function summarizeAgyFile(filePath, stat) {
     mtimeMs: stat.mtimeMs,
     size: stat.size,
     path: filePath,
-    fullPath: fs.existsSync(fullPath) ? fullPath : null
+    fullPath: (await io.exists(fullPath)) ? fullPath : null
   };
 }
 
-function discoverSessionStubs(opts = {}) {
+async function discoverSessionStubs(opts = {}) {
+  const { io } = opts;
   const { claudeDir, agyDir } = defaultDirs(opts);
   const wantHarness = opts.harness ? opts.harness.toLowerCase() : null;
   const includeSubagents = Boolean(opts.includeSubagents || opts.subagents);
   const stubs = [];
 
-  if ((!wantHarness || wantHarness === 'claude') && fs.existsSync(claudeDir)) {
+  if ((!wantHarness || wantHarness === 'claude') && (await io.exists(claudeDir))) {
     try {
-      for (const projDir of fs.readdirSync(claudeDir)) {
-        const fullProjDir = path.join(claudeDir, projDir);
-        let dirStat;
-        try {
-          dirStat = fs.statSync(fullProjDir);
-        } catch (_) {
-          continue;
-        }
-        if (!dirStat.isDirectory()) continue;
-
-        for (const f of fs.readdirSync(fullProjDir)) {
-          const fullFile = path.join(fullProjDir, f);
-          try {
-            const st = fs.statSync(fullFile);
-            if (st.isFile() && f.endsWith('.jsonl') && st.size > 0) {
-              const id = path.basename(fullFile, '.jsonl');
-              stubs.push({ id, harness: 'claude', path: fullFile, stat: st, mtimeMs: st.mtimeMs });
-            } else if (includeSubagents && st.isDirectory()) {
-              const saDir = path.join(fullFile, 'subagents');
-              if (fs.existsSync(saDir)) {
-                for (const sf of fs.readdirSync(saDir)) {
-                  if (!sf.endsWith('.jsonl')) continue;
-                  const saFile = path.join(saDir, sf);
-                  try {
-                    const saSt = fs.statSync(saFile);
-                    if (saSt.isFile() && saSt.size > 0) {
-                      const rawId = path.basename(saFile, '.jsonl').replace(/^agent-/, '');
-                      stubs.push({ id: rawId, rawId: path.basename(saFile, '.jsonl'), harness: 'claude', isSubagent: true, path: saFile, stat: saSt, mtimeMs: saSt.mtimeMs });
-                    }
-                  } catch (_) {}
-                }
-              }
-            }
-          } catch (_) {}
+      const files = await io.glob('**/*.jsonl', claudeDir);
+      for (const rel of files) {
+        const norm = rel.replace(/\\/g, '/');
+        const parts = norm.split('/');
+        const fullFile = path.join(claudeDir, norm);
+        const st = await io.stat(fullFile);
+        if (!st || !st.isFile || st.size <= 0) continue;
+        if (parts.length === 2) {
+          const id = path.basename(fullFile, '.jsonl');
+          stubs.push({ id, harness: 'claude', path: fullFile, stat: st, mtimeMs: st.mtimeMs });
+        } else if (includeSubagents && parts.length === 4 && parts[2] === 'subagents') {
+          const rawBase = path.basename(fullFile, '.jsonl');
+          const rawId = rawBase.replace(/^agent-/, '');
+          stubs.push({ id: rawId, rawId: rawBase, harness: 'claude', isSubagent: true, path: fullFile, stat: st, mtimeMs: st.mtimeMs });
         }
       }
     } catch (_) {}
   }
 
-  if ((!wantHarness || wantHarness === 'agy' || wantHarness === 'antigravity') && fs.existsSync(agyDir)) {
+  if ((!wantHarness || wantHarness === 'agy' || wantHarness === 'antigravity') && (await io.exists(agyDir))) {
     try {
-      for (const convId of fs.readdirSync(agyDir)) {
-        const tFile = path.join(agyDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
-        try {
-          if (!fs.existsSync(tFile)) continue;
-          const st = fs.statSync(tFile);
-          if (st.isFile() && st.size > 0) {
-            stubs.push({ id: convId, harness: 'agy', path: tFile, stat: st, mtimeMs: st.mtimeMs });
-          }
-        } catch (_) {}
+      const files = await io.glob('**/transcript.jsonl', agyDir);
+      for (const rel of files) {
+        const norm = rel.replace(/\\/g, '/');
+        const parts = norm.split('/');
+        if (parts.length !== 4 || parts[1] !== '.system_generated' || parts[2] !== 'logs') continue;
+        const convId = parts[0];
+        const tFile = path.join(agyDir, norm);
+        const st = await io.stat(tFile);
+        if (st && st.isFile && st.size > 0) {
+          stubs.push({ id: convId, harness: 'agy', path: tFile, stat: st, mtimeMs: st.mtimeMs });
+        }
       }
     } catch (_) {}
   }
@@ -540,14 +513,15 @@ function discoverSessionStubs(opts = {}) {
   return stubs;
 }
 
-function hydrateStub(stub) {
+async function hydrateStub(io, stub) {
   return stub.harness === 'claude'
-    ? summarizeClaudeFile(stub.path, stub.stat)
-    : summarizeAgyFile(stub.path, stub.stat);
+    ? summarizeClaudeFile(io, stub.path, stub.stat)
+    : summarizeAgyFile(io, stub.path, stub.stat);
 }
 
-function listSessions(opts = {}) {
-  const stubs = discoverSessionStubs(opts);
+async function listSessions(opts = {}) {
+  const { io } = opts;
+  const stubs = await discoverSessionStubs(opts);
   const limit = Number(opts.limit) > 0 ? Number(opts.limit) : 15;
   const query = opts.query ? String(opts.query).toLowerCase().trim() : null;
   const explicitProject = opts.project ? String(opts.project).toLowerCase().trim() : null;
@@ -586,7 +560,7 @@ function listSessions(opts = {}) {
   const activeProjNeedle = explicitProject || cwdBase;
 
   for (const stub of stubs) {
-    const s = hydrateStub(stub);
+    const s = await hydrateStub(io, stub);
     hydratedCache.push(s);
     if (matchesFilter(s, activeProjNeedle)) {
       results.push(s);
@@ -602,28 +576,31 @@ function listSessions(opts = {}) {
   return results;
 }
 
-function resolveSession(idOrLatest, opts = {}) {
-  if (idOrLatest && fs.existsSync(idOrLatest) && fs.statSync(idOrLatest).isFile()) {
-    const st = fs.statSync(idOrLatest);
-    const firstLine = fs.readFileSync(idOrLatest, 'utf8').split('\n')[0] || '{}';
-    let parsed = {};
-    try {
-      parsed = JSON.parse(firstLine);
-    } catch (_) {}
-    if (typeof parsed.step_index === 'number' || parsed.source === 'USER_EXPLICIT' || parsed.type === 'PLANNER_RESPONSE' || parsed.type === 'SYSTEM_MESSAGE') {
-      return summarizeAgyFile(idOrLatest, st);
+async function resolveSession(idOrLatest, opts = {}) {
+  const { io } = opts;
+  if (idOrLatest && (await io.exists(idOrLatest))) {
+    const st = await io.stat(idOrLatest);
+    if (st && st.isFile) {
+      const firstLine = (await io.readText(idOrLatest)).split('\n')[0] || '{}';
+      let parsed = {};
+      try {
+        parsed = JSON.parse(firstLine);
+      } catch (_) {}
+      if (typeof parsed.step_index === 'number' || parsed.source === 'USER_EXPLICIT' || parsed.type === 'PLANNER_RESPONSE' || parsed.type === 'SYSTEM_MESSAGE') {
+        return summarizeAgyFile(io, idOrLatest, st);
+      }
+      return summarizeClaudeFile(io, idOrLatest, st);
     }
-    return summarizeClaudeFile(idOrLatest, st);
   }
 
   if (!idOrLatest || idOrLatest === 'latest') {
-    const scoped = listSessions({ ...opts, limit: 1 });
+    const scoped = await listSessions({ ...opts, limit: 1 });
     if (scoped[0]) return scoped[0];
-    const topStubs = discoverSessionStubs(opts);
-    return topStubs[0] ? hydrateStub(topStubs[0]) : null;
+    const topStubs = await discoverSessionStubs(opts);
+    return topStubs[0] ? hydrateStub(io, topStubs[0]) : null;
   }
 
-  const stubs = discoverSessionStubs({ ...opts, includeSubagents: true });
+  const stubs = await discoverSessionStubs({ ...opts, includeSubagents: true });
   if (stubs.length === 0) return null;
 
   const needle = String(idOrLatest).toLowerCase().trim().replace(/^agent-/, '');
@@ -633,10 +610,10 @@ function resolveSession(idOrLatest, opts = {}) {
       st.id.toLowerCase().startsWith(needle) ||
       (st.rawId && st.rawId.toLowerCase().startsWith(String(idOrLatest).toLowerCase().trim()))
   );
-  if (fastStub) return hydrateStub(fastStub);
+  if (fastStub) return hydrateStub(io, fastStub);
 
   for (const st of stubs) {
-    const s = hydrateStub(st);
+    const s = await hydrateStub(io, st);
     if (
       (s.title && s.title.toLowerCase().includes(needle)) ||
       (s.project && s.project.toLowerCase().includes(needle))
@@ -725,8 +702,8 @@ function applyResultToToolCall(tc, rawOutput, isErrorStatus) {
   }
 }
 
-function parseAntigravityTranscript(sessionSummary) {
-  const rawLines = fs.readFileSync(sessionSummary.path, 'utf8').trim().split('\n').filter(Boolean);
+async function parseAntigravityTranscript(io, sessionSummary) {
+  const rawLines = (await io.readText(sessionSummary.path)).trim().split('\n').filter(Boolean);
   const entries = [];
   for (const l of rawLines) {
     try {
@@ -916,8 +893,8 @@ function parseAntigravityTranscript(sessionSummary) {
   return finalizeParsedSession(meta, steps, sessionSummary);
 }
 
-function parseClaudeTranscript(sessionSummary) {
-  const rawLines = fs.readFileSync(sessionSummary.path, 'utf8').trim().split('\n').filter(Boolean);
+async function parseClaudeTranscript(io, sessionSummary) {
+  const rawLines = (await io.readText(sessionSummary.path)).trim().split('\n').filter(Boolean);
   const entries = [];
   for (const l of rawLines) {
     try {
@@ -1417,19 +1394,20 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
   };
 }
 
-function parseSession(sessionOrId, opts = {}) {
+async function parseSession(sessionOrId, opts = {}) {
+  const { io } = opts;
   const summary = typeof sessionOrId === 'object' && sessionOrId !== null && sessionOrId.path
     ? sessionOrId
-    : resolveSession(sessionOrId, opts);
+    : await resolveSession(sessionOrId, opts);
 
   if (!summary) {
     throw new Error(`session not found: ${sessionOrId || 'latest'}`);
   }
 
   if (summary.harness === 'agy') {
-    return parseAntigravityTranscript(summary);
+    return parseAntigravityTranscript(io, summary);
   }
-  return parseClaudeTranscript(summary);
+  return parseClaudeTranscript(io, summary);
 }
 
 function fmtTime(iso) {
@@ -1803,10 +1781,10 @@ function parseStepRangeSpec(spec, maxStep) {
   return Array.from(wanted).sort((a, b) => a - b);
 }
 
-function loadFullAntigravityEntries(fullPath) {
-  if (!fullPath || !fs.existsSync(fullPath)) return null;
+async function loadFullAntigravityEntries(io, fullPath) {
+  if (!fullPath || !(await io.exists(fullPath))) return null;
   const map = new Map();
-  const lines = fs.readFileSync(fullPath, 'utf8').trim().split('\n').filter(Boolean);
+  const lines = (await io.readText(fullPath)).trim().split('\n').filter(Boolean);
   for (let i = 0; i < lines.length; i++) {
     try {
       const o = JSON.parse(lines[i]);
@@ -1841,7 +1819,7 @@ function resolveInspectSteps(steps, targetIndices) {
   return steps.filter(s => targetSet.has(s.index) && !coveredResultSteps.has(s.index));
 }
 
-function formatInspectMarkdown(parsed, stepSpec, opts = {}) {
+async function formatInspectMarkdown(parsed, stepSpec, opts = {}) {
   const { meta, steps, sessionSummary } = parsed;
   const format = normalizeFormat(opts.format, 'extended');
   const maxStep = steps.reduce((m, s) => Math.max(m, s.index), 0);
@@ -1859,8 +1837,8 @@ function formatInspectMarkdown(parsed, stepSpec, opts = {}) {
     const needsFull = foundSteps.some(
       s => s.truncated || (Array.isArray(s.tools) && s.tools.some(tc => tc.truncated))
     );
-    if (needsFull) {
-      fullAgyMap = loadFullAntigravityEntries(sessionSummary.fullPath);
+    if (needsFull && opts.io) {
+      fullAgyMap = await loadFullAntigravityEntries(opts.io, sessionSummary.fullPath);
     }
   }
 

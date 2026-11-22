@@ -5,7 +5,17 @@
       "name": "Session Reader",
       "description": "Discover and read Claude Code and Antigravity session transcripts as Markdown",
       "run": {
-        "command": "src/index.mjs"
+        "command": "src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "fs.glob:~/.claude/projects::**/*.jsonl",
+            "fs.glob:~/.gemini/antigravity/brain::**/transcript.jsonl",
+            "fs.read:~/.claude/projects/**",
+            "fs.read:~/.gemini/antigravity/brain/**",
+            "fs.read:**"
+          ],
+          "deny": []
+        }
       }
     }
   }
