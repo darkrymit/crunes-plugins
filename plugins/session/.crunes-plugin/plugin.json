@@ -1,0 +1,12 @@
+{
+  "format": "1",
+  "runes": {
+    "session": {
+      "name": "Session Reader",
+      "description": "Discover and read Claude Code and Antigravity session transcripts as Markdown",
+      "run": {
+        "command": "src/index.mjs"
+      }
+    }
+  }
+}

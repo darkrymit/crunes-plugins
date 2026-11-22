@@ -1,0 +1,18 @@
+{
+  "format": "1",
+  "runes": {
+    "check": {
+      "name": "Session Plugin Check",
+      "description": "Run session plugin unit and E2E tests",
+      "run": {
+        "command": ".crunes/runes/check/src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "shell.run:node --test test/session.test.js"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

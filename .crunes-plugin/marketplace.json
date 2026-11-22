@@ -43,6 +43,14 @@
       "author": { "name": "darkrymit" },
       "source": "./plugins/secret",
       "category": "global"
+    },
+    {
+      "name": "session",
+      "description": "Discover and read Claude Code and Antigravity session transcripts as Markdown",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/session",
+      "category": "global"
     }
   ]
 }
