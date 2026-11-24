@@ -34,6 +34,8 @@ crunes plugin install crunes-plugins@kb
 | [`source`](plugins/source) | Checks whether registered outside sources (channels, git repos, sites, files) moved since last recorded. |
 | [`bucket`](plugins/bucket) | Registers folders anywhere on disk (default root `~/.bucket`) and finds them by id, label, or README. |
 
+| [`tla`](plugins/tla) | Runs TLC model checking on TLA+ specs and renders counterexamples as Mermaid statecharts. |
+
 ## Project Plugins
 
 | Plugin | What it does |

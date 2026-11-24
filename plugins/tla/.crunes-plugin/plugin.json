@@ -1,0 +1,30 @@
+{
+  "format": "1",
+  "runes": {
+    "tla": {
+      "name": "TLA+ / TLC Checker",
+      "description": "Run TLC model checking on TLA+ specs and render counterexamples as Mermaid statecharts",
+      "run": {
+        "command": "src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "fs.read:**",
+            "fs.read:/**",
+            "fs.read:C:/**",
+            "fs.read:D:/**",
+            "fs.read:~/.tla/**",
+            "fs.read:~/.local/share/tla/**",
+            "fs.mkdir:~/.tla",
+            "fs.write:~/.tla/**",
+            "shell.run:java *",
+            "shell.run:tlc *",
+            "shell.run:curl *",
+            "shell.run:where.exe *",
+            "shell.run:which *"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

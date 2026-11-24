@@ -1,0 +1,18 @@
+{
+  "format": "1",
+  "runes": {
+    "check": {
+      "name": "TLA Plugin Check",
+      "description": "Run tla plugin unit tests",
+      "run": {
+        "command": ".crunes/runes/check/src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "shell.run:node --test test/tla.test.js"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

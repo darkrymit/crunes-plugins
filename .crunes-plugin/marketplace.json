@@ -2,13 +2,17 @@
   "format": "1",
   "name": "crunes-plugins",
   "description": "Official first-party plugins for crunes",
-  "owner": { "name": "darkrymit" },
+  "owner": {
+    "name": "darkrymit"
+  },
   "plugins": [
     {
       "name": "kb",
       "description": "Query knowledge bundles: what exists, what is in them, and their text",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/kb",
       "category": "project"
     },
@@ -16,7 +20,9 @@
       "name": "qdev",
       "description": "Quarkus Dev UI CLI: logs, health, config, flyway, cache, scheduler, endpoints, graphql, openapi, dev-services, datasources",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/qdev",
       "category": "project"
     },
@@ -24,7 +30,9 @@
       "name": "token",
       "description": "Estimate token counts (OpenAI & Claude) and inspect context weight before reading",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/token",
       "category": "global"
     },
@@ -32,7 +40,9 @@
       "name": "outline",
       "description": "Structural code outline: collapse function and method bodies (strips comments & imports by default)",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/outline",
       "category": "global"
     },
@@ -40,7 +50,9 @@
       "name": "secret",
       "description": "Read config and env files with secret values and URL credentials masked",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/secret",
       "category": "global"
     },
@@ -48,7 +60,9 @@
       "name": "session",
       "description": "Discover and read Claude Code and Antigravity session transcripts as Markdown",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/session",
       "category": "global"
     },
@@ -56,7 +70,9 @@
       "name": "media",
       "description": "Download, transcribe, pack/unpack, and prepare video media and keyframe timelines",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/media",
       "category": "global"
     },
@@ -64,7 +80,9 @@
       "name": "source",
       "description": "Check whether registered outside sources (channels, repos, sites, files) moved since recorded",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/source",
       "category": "global"
     },
@@ -72,7 +90,9 @@
       "name": "bucket",
       "description": "Register folders anywhere on disk (default root ~/.bucket) and find them by id, label, or README",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/bucket",
       "category": "global"
     },
@@ -80,8 +100,20 @@
       "name": "signal",
       "description": "Named timers that run a command when they expire; cancel by name or prefix from any folder",
       "version": "1.0.0",
-      "author": { "name": "darkrymit" },
+      "author": {
+        "name": "darkrymit"
+      },
       "source": "./plugins/signal",
+      "category": "global"
+    },
+    {
+      "name": "tla",
+      "description": "Run TLC model checking on TLA+ specs and render counterexamples as Mermaid statecharts",
+      "version": "1.0.0",
+      "author": {
+        "name": "darkrymit"
+      },
+      "source": "./plugins/tla",
       "category": "global"
     }
   ]

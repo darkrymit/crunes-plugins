@@ -1,0 +1,16 @@
+{
+  "runeKey": "check",
+  "hash": "42e61ca1f4c9065de67266221050e9e442574cdf5c27aee8b198ef33b1922a3e:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "cachedAt": "2026-11-24T22:22:54.737Z",
+  "schema": {
+    "options": [
+      {
+        "flags": "-h, --help",
+        "description": "Show help"
+      }
+    ],
+    "positionals": [],
+    "examples": [],
+    "commands": []
+  }
+}
