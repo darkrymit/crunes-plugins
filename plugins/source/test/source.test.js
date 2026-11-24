@@ -1,31 +1,20 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { checkSources, recordSources, tiktokPostDate, validateSources } from '../src/source.js'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const srcDir = path.resolve(__dirname, '../src')
 const localCrunesCli = path.resolve(__dirname, '../../../../crunes-cli/dist/cli.js')
+const localTestShim = path.resolve(__dirname, '../../../../crunes-cli/src/test/index.js')
 
-function makeNodeIo() {
-  return {
-    exists: async p => fs.existsSync(p),
-    stat: async p => {
-      const st = fs.statSync(p)
-      return { isFile: st.isFile(), isDirectory: st.isDirectory() }
-    },
-    readText: async p => fs.readFileSync(p, 'utf8'),
-    writeText: async (p, content) => fs.writeFileSync(p, content, 'utf8'),
-    glob: async (pattern, cwd) => fs.readdirSync(cwd).filter(f => fs.statSync(path.join(cwd, f)).isFile()),
-    hashSha256: text => crypto.createHash('sha256').update(text).digest('hex'),
-    run: async () => '',
-  }
-}
+const { setupCrunesTest } = await import(
+  fs.existsSync(localTestShim) ? pathToFileURL(localTestShim).href : '@darkrymit/crunes-cli/test'
+)
+const { checkSources, recordSources, tiktokPostDate, validateSources } = await import('../src/source.js')
 
 function runCrunes(cwd, args) {
   const useLocal = fs.existsSync(localCrunesCli)
@@ -34,7 +23,7 @@ function runCrunes(cwd, args) {
   return execFileSync(cmd, fullArgs, { cwd, encoding: 'utf8' })
 }
 
-describe('source.js (pure unit)', () => {
+describe('source.js (unit with @utils shim)', () => {
   it('validates schemas and decodes TikTok post dates', () => {
     assert.throws(() => validateSources({}, 'bad.json'), /needs a "sources" array/)
     const ts = BigInt(Math.floor(Date.parse('2026-11-01T00:00:00Z') / 1000)) << 32n
@@ -43,6 +32,7 @@ describe('source.js (pure unit)', () => {
 
   it('records and checks local file and site sources', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-source-unit-'))
+    const env = setupCrunesTest({ cwd: tmp })
     try {
       const targetFile = path.join(tmp, 'notes.txt')
       const sourcesFile = path.join(tmp, 'sources.json')
@@ -58,24 +48,24 @@ describe('source.js (pure unit)', () => {
         'utf8'
       )
 
-      const io = makeNodeIo()
-      const rec = await recordSources(sourcesFile, { io, now: new Date('2026-11-20T00:00:00Z') })
+      const rec = await recordSources(sourcesFile, { now: new Date('2026-11-20T00:00:00Z') })
       assert.equal(rec.length, 2)
       assert.equal(rec[0].status, 'recorded')
 
-      const same = await checkSources(sourcesFile, { io, now: new Date('2026-11-22T00:00:00Z') })
+      const same = await checkSources(sourcesFile, { now: new Date('2026-11-22T00:00:00Z') })
       assert.deepEqual(
         same.map(r => r.status),
         ['same', 'same']
       )
 
       fs.writeFileSync(targetFile, 'hello v2\n', 'utf8')
-      const moved = await checkSources(sourcesFile, { io, now: new Date('2026-11-22T00:00:00Z') })
+      const moved = await checkSources(sourcesFile, { now: new Date('2026-11-22T00:00:00Z') })
       assert.deepEqual(
         moved.map(r => r.status),
         ['moved', 'same']
       )
     } finally {
+      await env.cleanup()
       fs.rmSync(tmp, { recursive: true, force: true })
     }
   })

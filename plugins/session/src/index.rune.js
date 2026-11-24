@@ -23,26 +23,6 @@ function fmtSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function createIsolateIo() {
-  return {
-    exists: p => fs.exists(p),
-    stat: async p => {
-      try {
-        return await fs.stat(p)
-      } catch {
-        return null
-      }
-    },
-    readText: p => fs.read(p),
-    readHeadTail: async p => {
-      const headRaw = await fs.read(p, { from: 1, to: 80, throw: false })
-      const tailRaw = await fs.read(p, { from: -80, throw: false })
-      const split = s => (s ? s.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : [])
-      return { headLines: split(headRaw), tailLines: split(tailRaw) }
-    },
-    glob: (pattern, cwd) => fs.glob(pattern, { cwd, dot: true }),
-  }
-}
 
 export function args(b) {
   return b
@@ -84,12 +64,10 @@ export function args(b) {
 }
 
 export async function run(parsed) {
-  const io = createIsolateIo()
   const cmd = parsed.$command
 
   if (cmd === 'list') {
     const items = await listSessions({
-      io,
       cwd: await fs.resolve('.'),
       project: parsed.project,
       all: Boolean(parsed.all),
@@ -118,7 +96,6 @@ export async function run(parsed) {
 
   if (cmd === 'digest' || cmd === 'read') {
     const sessionData = await parseSession(parsed.id || 'latest', {
-      io,
       cwd: await fs.resolve('.'),
       project: parsed.project,
       harness: parsed.harness,
@@ -129,12 +106,11 @@ export async function run(parsed) {
 
   if (cmd === 'inspect' || cmd === 'step') {
     const sessionData = await parseSession(parsed.id, {
-      io,
       cwd: await fs.resolve('.'),
       harness: parsed.harness,
     })
     const stepSpec = Array.isArray(parsed.steps) ? parsed.steps.join(',') : String(parsed.steps || '')
-    const md = await formatInspectMarkdown(sessionData, stepSpec, { format: parsed.format || 'extended', io })
+    const md = await formatInspectMarkdown(sessionData, stepSpec, { format: parsed.format || 'extended' })
     return [section.create('session', { type: 'markdown', content: md })]
   }
 

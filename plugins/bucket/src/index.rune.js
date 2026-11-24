@@ -1,4 +1,4 @@
-import { fs, os, rune, section, shell } from '@utils'
+import { rune, section } from '@utils'
 import {
   createBucket,
   deleteBucketPlan,
@@ -35,57 +35,6 @@ function asArray(val) {
   return Array.isArray(val) ? val : [val]
 }
 
-function createIsolateIo() {
-  async function gitExec(dir, args) {
-    const res = await shell.exec(`git -C "${dir}" ${args.join(' ')}`, { throw: false })
-    return res.exitCode === 0 ? res.stdout.trim() : null
-  }
-
-  return {
-    isWin: os.platform === 'win32',
-    resolve: p => fs.resolve(p),
-    exists: p => fs.exists(p),
-    stat: async p => {
-      try {
-        return await fs.stat(p)
-      } catch {
-        return null
-      }
-    },
-    readText: p => fs.read(p),
-    readHead: async (p, lines) => (await fs.read(p, { from: 1, to: lines, throw: false })) || '',
-    writeText: (p, content) => fs.write(p, content),
-    mkdir: p => fs.mkdir(p),
-    rmDir: p => fs.remove(p, { recursive: true }),
-    listTop: p => fs.glob('*', { cwd: p }),
-    preview: async dir => {
-      const files = await fs.glob('**/*', { cwd: dir })
-      let bytes = 0
-      for (const f of files.slice(0, 1000)) {
-        try {
-          const st = await fs.stat(`${dir}/${f}`)
-          if (st && st.isFile) bytes += st.size
-        } catch {}
-      }
-      return { files: files.length, bytes, capped: false }
-    },
-    gitInit: async dir => {
-      const res = await shell.exec(`git -C "${dir}" init -q`, { throw: false })
-      if (res.exitCode !== 0) throw new Error(`git init failed in ${dir}`)
-    },
-    gitState: async dir => {
-      if (!(await fs.exists(`${dir}/.git`))) return null
-      const porcelain = await gitExec(dir, ['status', '--porcelain'])
-      const unpushed = await gitExec(dir, ['rev-list', '--count', '--branches', '--not', '--remotes'])
-      return {
-        branch: await gitExec(dir, ['rev-parse', '--abbrev-ref', 'HEAD']),
-        remote: await gitExec(dir, ['remote', 'get-url', 'origin']),
-        dirty: porcelain ? porcelain.split('\n').length : 0,
-        unpushed: Number(unpushed) || 0,
-      }
-    },
-  }
-}
 
 export function args(b) {
   return b
@@ -148,12 +97,11 @@ export async function run(parsed) {
   const cmd = parsed.$command
   if (parsed.help || !cmd) return rune.helpSection()
 
-  const io = createIsolateIo()
-  return withRegistry(io, REGISTRY_LOCATION, async reg => {
+  return withRegistry(REGISTRY_LOCATION, async reg => {
     const labels = asArray(parsed.label)
 
     if (cmd === 'new') {
-      const b = await createBucket(io, reg, {
+      const b = await createBucket(reg, {
         id: parsed.id,
         parent: parsed.in,
         defaultRoot: DEFAULT_ROOT,
@@ -164,7 +112,7 @@ export async function run(parsed) {
     }
 
     if (cmd === 'register') {
-      const b = await registerBucket(io, reg, { dir: parsed.dir, id: parsed.id, labels })
+      const b = await registerBucket(reg, { dir: parsed.dir, id: parsed.id, labels })
       return [section.create('bucket:register', { type: 'markdown', content: `${b.id} -> ${b.path}`, bucket: b })]
     }
 
@@ -174,7 +122,7 @@ export async function run(parsed) {
     }
 
     if (cmd === 'delete') {
-      const plan = await deleteBucketPlan(io, reg, parsed.id)
+      const plan = await deleteBucketPlan(reg, parsed.id)
       const size = `${plan.files} files, ${fmtBytes(plan.bytes)}`
       if (parsed['dry-run'] || parsed.dryRun) {
         return [section.create('bucket:delete', { type: 'markdown', content: `would delete ${plan.bucket.path} (${size})` })]
@@ -182,17 +130,17 @@ export async function run(parsed) {
       if (!parsed.yes) {
         throw new Error('pass --yes to delete (or --dry-run to preview)')
       }
-      await removeBucket(io, reg, parsed.id)
+      await removeBucket(reg, parsed.id)
       return [section.create('bucket:delete', { type: 'markdown', content: `deleted ${plan.bucket.path}` })]
     }
 
     if (cmd === 'rename') {
-      const b = await renameBucket(io, reg, parsed.id, parsed.newId)
+      const b = await renameBucket(reg, parsed.id, parsed.newId)
       return [section.create('bucket:rename', { type: 'markdown', content: `${parsed.id} -> ${b.id}`, bucket: b })]
     }
 
     if (cmd === 'info') {
-      const b = await infoBucket(io, reg, parsed.id)
+      const b = await infoBucket(reg, parsed.id)
       if (parsed.json) {
         return [section.create('bucket:info', { type: 'markdown', content: JSON.stringify(b, null, 2), bucket: b })]
       }
@@ -205,7 +153,7 @@ export async function run(parsed) {
     }
 
     if (cmd === 'where') {
-      const hits = await resolveBucket(io, reg, parsed.name, labels)
+      const hits = await resolveBucket(reg, parsed.name, labels)
       if (hits.length === 1) {
         return [section.create('bucket:where', { type: 'markdown', content: hits[0].path, bucket: hits[0] })]
       }
@@ -217,7 +165,7 @@ export async function run(parsed) {
 
     if (cmd === 'find') {
       const query = Array.isArray(parsed.words) ? parsed.words.join(' ') : String(parsed.words || '')
-      const hits = await searchBuckets(io, reg, query, Number(parsed.limit) || 20, labels)
+      const hits = await searchBuckets(reg, query, Number(parsed.limit) || 20, labels)
       if (parsed.json) {
         return [section.create('bucket:find', { type: 'markdown', content: JSON.stringify(hits, null, 2), buckets: hits })]
       }
@@ -231,7 +179,7 @@ export async function run(parsed) {
     }
 
     if (cmd === 'list') {
-      const rows = await listBuckets(io, reg, labels)
+      const rows = await listBuckets(reg, labels)
       if (parsed.json) {
         return [section.create('bucket:list', { type: 'markdown', content: JSON.stringify(rows, null, 2), buckets: rows })]
       }
@@ -239,12 +187,12 @@ export async function run(parsed) {
     }
 
     if (cmd === 'label add') {
-      const b = await relabelBucket(io, reg, parsed.id, { add: asArray(parsed.labels) })
+      const b = await relabelBucket(reg, parsed.id, { add: asArray(parsed.labels) })
       return [section.create('bucket:label', { type: 'markdown', content: `${b.id}: ${b.labels.join(',')}`, bucket: b })]
     }
 
     if (cmd === 'label rm') {
-      const b = await relabelBucket(io, reg, parsed.id, { remove: asArray(parsed.labels) })
+      const b = await relabelBucket(reg, parsed.id, { remove: asArray(parsed.labels) })
       return [section.create('bucket:label', { type: 'markdown', content: `${b.id}: ${b.labels.join(',') || '(no labels)'}`, bucket: b })]
     }
 

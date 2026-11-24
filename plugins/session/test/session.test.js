@@ -4,51 +4,25 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import {
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const srcDir = path.resolve(__dirname, '../src')
+const localCrunesCli = path.resolve(__dirname, '../../../../crunes-cli/dist/cli.js')
+const localTestShim = path.resolve(__dirname, '../../../../crunes-cli/src/test/index.js')
+
+const { setupCrunesTest } = await import(
+  fs.existsSync(localTestShim) ? pathToFileURL(localTestShim).href : '@darkrymit/crunes-cli/test'
+)
+const {
   formatDigestMarkdown,
   formatInspectMarkdown,
   listSessions,
   normalizeFormat,
   parseSession,
   parseStepRangeSpec,
-} from '../src/session.js'
+} = await import('../src/session.js')
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const srcDir = path.resolve(__dirname, '../src')
-const localCrunesCli = path.resolve(__dirname, '../../../../crunes-cli/dist/cli.js')
-
-function makeNodeIo() {
-  return {
-    exists: async p => fs.existsSync(p),
-    stat: async p => {
-      try {
-        const st = fs.statSync(p)
-        return { size: st.size, mtimeMs: st.mtimeMs, isFile: st.isFile(), isDirectory: st.isDirectory() }
-      } catch {
-        return null
-      }
-    },
-    readText: async p => fs.readFileSync(p, 'utf8'),
-    readHeadTail: async p => {
-      const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-      return { headLines: lines.slice(0, 80), tailLines: lines.slice(-80) }
-    },
-    glob: async (pattern, cwd) => {
-      const out = []
-      const walk = (dir, prefix) => {
-        for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-          const rel = prefix ? `${prefix}/${ent.name}` : ent.name
-          const full = path.join(dir, ent.name)
-          if (ent.isDirectory()) walk(full, rel)
-          else if (pattern === '**/*.jsonl' ? ent.name.endsWith('.jsonl') : ent.name === 'transcript.jsonl') out.push(rel)
-        }
-      }
-      if (fs.existsSync(cwd)) walk(cwd, '')
-      return out
-    },
-  }
-}
 
 function makeAgyFixture(tmp) {
   const convId = '11111111-2222-3333-4444-555555555555'
@@ -97,22 +71,23 @@ describe('session.js (unit + fixture)', () => {
 
   it('lists, parses, digests, and inspects an Antigravity transcript fixture', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-test-'))
+    const env = setupCrunesTest({ cwd: tmp })
     try {
       makeAgyFixture(tmp)
-      const io = makeNodeIo()
-      const sessions = await listSessions({ io, homeDir: tmp, all: true, harness: 'agy' })
+      const sessions = await listSessions({ homeDir: tmp, all: true, harness: 'agy' })
       assert.equal(sessions.length, 1)
       assert.equal(sessions[0].shortId, '11111111')
 
-      const parsed = await parseSession('11111111', { io, homeDir: tmp, harness: 'agy' })
+      const parsed = await parseSession('11111111', { homeDir: tmp, harness: 'agy' })
       const digest = formatDigestMarkdown(parsed, { format: 'compact' })
       assert.match(digest, /Check the status of the demo workspace/)
       assert.match(digest, /Everything in the demo workspace is clean/)
 
-      const inspected = await formatInspectMarkdown(parsed, '1..2', { io, format: 'extended' })
+      const inspected = await formatInspectMarkdown(parsed, '1..2', { format: 'extended' })
       assert.match(inspected, /Step #1/)
       assert.match(inspected, /Step #2/)
     } finally {
+      await env.cleanup()
       fs.rmSync(tmp, { recursive: true, force: true })
     }
   })

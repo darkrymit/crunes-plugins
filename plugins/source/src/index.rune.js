@@ -1,46 +1,5 @@
-import { crypt, fs, os, rune, section, shell } from '@utils'
+import { rune, section } from '@utils'
 import { checkSources, recordSources } from './source.js'
-
-function q(arg) {
-  const s = String(arg)
-  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
-}
-
-async function hasBin(bin) {
-  const checkCmd = os.platform === 'win32' ? 'where.exe' : 'which'
-  const res = await shell.exec(`${checkCmd} ${bin}`, { throw: false })
-  return res.exitCode === 0 && Boolean(res.stdout.trim())
-}
-
-async function getYtDlpPrefix() {
-  if (await hasBin('yt-dlp')) return 'yt-dlp'
-  if (await hasBin('uvx')) return 'uvx yt-dlp'
-  if (await hasBin('uv')) return 'uv run yt-dlp'
-  return null
-}
-
-function createIsolateIo() {
-  return {
-    exists: p => fs.exists(p),
-    stat: p => fs.stat(p),
-    readText: p => fs.read(p),
-    writeText: (p, content) => fs.write(p, content),
-    glob: (pattern, cwd) => fs.glob(pattern, { cwd }),
-    hashSha256: text => crypt.hashAsHex('sha256', text),
-    run: async (cmd, args, opts = {}) => {
-      let prefix = cmd
-      if (cmd === 'yt-dlp') {
-        prefix = await getYtDlpPrefix()
-        if (!prefix) throw new Error('yt-dlp not found on PATH or via uvx. Install yt-dlp or uv.')
-      }
-      const res = await shell.exec(`${prefix} ${args.map(q).join(' ')}`, { cwd: opts.cwd, throw: false })
-      if (res.exitCode !== 0) {
-        throw new Error(`${cmd} exited ${res.exitCode}: ${(res.stderr || res.stdout || '').trim()}`)
-      }
-      return res.stdout
-    },
-  }
-}
 
 export function args(b) {
   return b
@@ -63,12 +22,11 @@ export async function run(parsed) {
     return rune.helpSection()
   }
 
-  const io = createIsolateIo()
   const rows =
     cmd === 'check'
-      ? await checkSources(parsed.file, { io, id: parsed.id })
+      ? await checkSources(parsed.file, { id: parsed.id })
       : cmd === 'record'
-        ? await recordSources(parsed.file, { io, id: parsed.id })
+        ? await recordSources(parsed.file, { id: parsed.id })
         : null
 
   if (!rows) {

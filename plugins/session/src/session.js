@@ -1,3 +1,13 @@
+import { fs } from '@utils';
+
+async function safeStat(p) {
+  try {
+    return await fs.stat(p);
+  } catch {
+    return null;
+  }
+}
+
 const path = {
   basename(p, ext = '') {
     const clean = String(p || '').replace(/[/\\]+$/, '');
@@ -40,8 +50,11 @@ function defaultDirs(opts = {}) {
   };
 }
 
-async function readHeadAndTailLines(io, filePath) {
-  return io.readHeadTail(filePath);
+async function readHeadAndTailLines(filePath) {
+  const headRaw = await fs.read(filePath, { from: 1, to: 80, throw: false });
+  const tailRaw = await fs.read(filePath, { from: -80, throw: false });
+  const split = s => (s ? s.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : []);
+  return { headLines: split(headRaw), tailLines: split(tailRaw) };
 }
 
 function cleanUserText(raw) {
@@ -285,11 +298,11 @@ function normalizeToolCall(rawName, rawArgs, cwd) {
   };
 }
 
-async function summarizeClaudeFile(io, filePath, stat) {
+async function summarizeClaudeFile(filePath, stat) {
   const rawBase = path.basename(filePath, '.jsonl');
   const inSubagentsDir = path.basename(path.dirname(filePath)) === 'subagents';
   let id = inSubagentsDir ? rawBase.replace(/^agent-/, '') : rawBase;
-  const { headLines, tailLines } = await readHeadAndTailLines(io, filePath);
+  const { headLines, tailLines } = await readHeadAndTailLines(filePath);
 
   let cwd = null;
   let branch = null;
@@ -304,8 +317,8 @@ async function summarizeClaudeFile(io, filePath, stat) {
   if (inSubagentsDir) {
     const metaPath = filePath.replace(/\.jsonl$/, '.meta.json');
     try {
-      if (await io.exists(metaPath)) {
-        const metaObj = JSON.parse(await io.readText(metaPath));
+      if (await fs.exists(metaPath)) {
+        const metaObj = JSON.parse(await fs.read(metaPath));
         if (metaObj.description) {
           title = `[${metaObj.agentType || 'subagent'}] ${metaObj.description}`;
         }
@@ -375,14 +388,14 @@ async function summarizeClaudeFile(io, filePath, stat) {
   };
 }
 
-async function summarizeAgyFile(io, filePath, stat) {
+async function summarizeAgyFile(filePath, stat) {
   const logsDir = path.dirname(filePath);
   const sysGenDir = path.dirname(logsDir);
   const brainFolder = path.dirname(sysGenDir);
   const id = path.basename(brainFolder);
   const fullPath = path.join(logsDir, 'transcript_full.jsonl');
 
-  const { headLines, tailLines } = await readHeadAndTailLines(io, filePath);
+  const { headLines, tailLines } = await readHeadAndTailLines(filePath);
 
   let project = null;
   let firstPrompt = null;
@@ -460,25 +473,24 @@ async function summarizeAgyFile(io, filePath, stat) {
     mtimeMs: stat.mtimeMs,
     size: stat.size,
     path: filePath,
-    fullPath: (await io.exists(fullPath)) ? fullPath : null
+    fullPath: (await fs.exists(fullPath)) ? fullPath : null
   };
 }
 
 async function discoverSessionStubs(opts = {}) {
-  const { io } = opts;
-  const { claudeDir, agyDir } = defaultDirs(opts);
+    const { claudeDir, agyDir } = defaultDirs(opts);
   const wantHarness = opts.harness ? opts.harness.toLowerCase() : null;
   const includeSubagents = Boolean(opts.includeSubagents || opts.subagents);
   const stubs = [];
 
-  if ((!wantHarness || wantHarness === 'claude') && (await io.exists(claudeDir))) {
+  if ((!wantHarness || wantHarness === 'claude') && (await fs.exists(claudeDir))) {
     try {
-      const files = await io.glob('**/*.jsonl', claudeDir);
+      const files = await fs.glob('**/*.jsonl', { cwd: claudeDir, dot: true });
       for (const rel of files) {
         const norm = rel.replace(/\\/g, '/');
         const parts = norm.split('/');
         const fullFile = path.join(claudeDir, norm);
-        const st = await io.stat(fullFile);
+        const st = await safeStat(fullFile);
         if (!st || !st.isFile || st.size <= 0) continue;
         if (parts.length === 2) {
           const id = path.basename(fullFile, '.jsonl');
@@ -492,16 +504,16 @@ async function discoverSessionStubs(opts = {}) {
     } catch (_) {}
   }
 
-  if ((!wantHarness || wantHarness === 'agy' || wantHarness === 'antigravity') && (await io.exists(agyDir))) {
+  if ((!wantHarness || wantHarness === 'agy' || wantHarness === 'antigravity') && (await fs.exists(agyDir))) {
     try {
-      const files = await io.glob('**/transcript.jsonl', agyDir);
+      const files = await fs.glob('**/transcript.jsonl', { cwd: agyDir, dot: true });
       for (const rel of files) {
         const norm = rel.replace(/\\/g, '/');
         const parts = norm.split('/');
         if (parts.length !== 4 || parts[1] !== '.system_generated' || parts[2] !== 'logs') continue;
         const convId = parts[0];
         const tFile = path.join(agyDir, norm);
-        const st = await io.stat(tFile);
+        const st = await safeStat(tFile);
         if (st && st.isFile && st.size > 0) {
           stubs.push({ id: convId, harness: 'agy', path: tFile, stat: st, mtimeMs: st.mtimeMs });
         }
@@ -513,15 +525,14 @@ async function discoverSessionStubs(opts = {}) {
   return stubs;
 }
 
-async function hydrateStub(io, stub) {
+async function hydrateStub(stub) {
   return stub.harness === 'claude'
-    ? summarizeClaudeFile(io, stub.path, stub.stat)
-    : summarizeAgyFile(io, stub.path, stub.stat);
+    ? summarizeClaudeFile(stub.path, stub.stat)
+    : summarizeAgyFile(stub.path, stub.stat);
 }
 
 async function listSessions(opts = {}) {
-  const { io } = opts;
-  const stubs = await discoverSessionStubs(opts);
+    const stubs = await discoverSessionStubs(opts);
   const limit = Number(opts.limit) > 0 ? Number(opts.limit) : 15;
   const query = opts.query ? String(opts.query).toLowerCase().trim() : null;
   const explicitProject = opts.project ? String(opts.project).toLowerCase().trim() : null;
@@ -560,7 +571,7 @@ async function listSessions(opts = {}) {
   const activeProjNeedle = explicitProject || cwdBase;
 
   for (const stub of stubs) {
-    const s = await hydrateStub(io, stub);
+    const s = await hydrateStub(stub);
     hydratedCache.push(s);
     if (matchesFilter(s, activeProjNeedle)) {
       results.push(s);
@@ -577,19 +588,18 @@ async function listSessions(opts = {}) {
 }
 
 async function resolveSession(idOrLatest, opts = {}) {
-  const { io } = opts;
-  if (idOrLatest && (await io.exists(idOrLatest))) {
-    const st = await io.stat(idOrLatest);
+    if (idOrLatest && (await fs.exists(idOrLatest))) {
+    const st = await safeStat(idOrLatest);
     if (st && st.isFile) {
-      const firstLine = (await io.readText(idOrLatest)).split('\n')[0] || '{}';
+      const firstLine = (await fs.read(idOrLatest)).split('\n')[0] || '{}';
       let parsed = {};
       try {
         parsed = JSON.parse(firstLine);
       } catch (_) {}
       if (typeof parsed.step_index === 'number' || parsed.source === 'USER_EXPLICIT' || parsed.type === 'PLANNER_RESPONSE' || parsed.type === 'SYSTEM_MESSAGE') {
-        return summarizeAgyFile(io, idOrLatest, st);
+        return summarizeAgyFile(idOrLatest, st);
       }
-      return summarizeClaudeFile(io, idOrLatest, st);
+      return summarizeClaudeFile(idOrLatest, st);
     }
   }
 
@@ -597,7 +607,7 @@ async function resolveSession(idOrLatest, opts = {}) {
     const scoped = await listSessions({ ...opts, limit: 1 });
     if (scoped[0]) return scoped[0];
     const topStubs = await discoverSessionStubs(opts);
-    return topStubs[0] ? hydrateStub(io, topStubs[0]) : null;
+    return topStubs[0] ? hydrateStub(topStubs[0]) : null;
   }
 
   const stubs = await discoverSessionStubs({ ...opts, includeSubagents: true });
@@ -610,10 +620,10 @@ async function resolveSession(idOrLatest, opts = {}) {
       st.id.toLowerCase().startsWith(needle) ||
       (st.rawId && st.rawId.toLowerCase().startsWith(String(idOrLatest).toLowerCase().trim()))
   );
-  if (fastStub) return hydrateStub(io, fastStub);
+  if (fastStub) return hydrateStub(fastStub);
 
   for (const st of stubs) {
-    const s = await hydrateStub(io, st);
+    const s = await hydrateStub(st);
     if (
       (s.title && s.title.toLowerCase().includes(needle)) ||
       (s.project && s.project.toLowerCase().includes(needle))
@@ -702,8 +712,8 @@ function applyResultToToolCall(tc, rawOutput, isErrorStatus) {
   }
 }
 
-async function parseAntigravityTranscript(io, sessionSummary) {
-  const rawLines = (await io.readText(sessionSummary.path)).trim().split('\n').filter(Boolean);
+async function parseAntigravityTranscript(sessionSummary) {
+  const rawLines = (await fs.read(sessionSummary.path)).trim().split('\n').filter(Boolean);
   const entries = [];
   for (const l of rawLines) {
     try {
@@ -893,8 +903,8 @@ async function parseAntigravityTranscript(io, sessionSummary) {
   return finalizeParsedSession(meta, steps, sessionSummary);
 }
 
-async function parseClaudeTranscript(io, sessionSummary) {
-  const rawLines = (await io.readText(sessionSummary.path)).trim().split('\n').filter(Boolean);
+async function parseClaudeTranscript(sessionSummary) {
+  const rawLines = (await fs.read(sessionSummary.path)).trim().split('\n').filter(Boolean);
   const entries = [];
   for (const l of rawLines) {
     try {
@@ -1395,8 +1405,7 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
 }
 
 async function parseSession(sessionOrId, opts = {}) {
-  const { io } = opts;
-  const summary = typeof sessionOrId === 'object' && sessionOrId !== null && sessionOrId.path
+    const summary = typeof sessionOrId === 'object' && sessionOrId !== null && sessionOrId.path
     ? sessionOrId
     : await resolveSession(sessionOrId, opts);
 
@@ -1405,9 +1414,9 @@ async function parseSession(sessionOrId, opts = {}) {
   }
 
   if (summary.harness === 'agy') {
-    return parseAntigravityTranscript(io, summary);
+    return parseAntigravityTranscript(summary);
   }
-  return parseClaudeTranscript(io, summary);
+  return parseClaudeTranscript(summary);
 }
 
 function fmtTime(iso) {
@@ -1781,10 +1790,10 @@ function parseStepRangeSpec(spec, maxStep) {
   return Array.from(wanted).sort((a, b) => a - b);
 }
 
-async function loadFullAntigravityEntries(io, fullPath) {
-  if (!fullPath || !(await io.exists(fullPath))) return null;
+async function loadFullAntigravityEntries(fullPath) {
+  if (!fullPath || !(await fs.exists(fullPath))) return null;
   const map = new Map();
-  const lines = (await io.readText(fullPath)).trim().split('\n').filter(Boolean);
+  const lines = (await fs.read(fullPath)).trim().split('\n').filter(Boolean);
   for (let i = 0; i < lines.length; i++) {
     try {
       const o = JSON.parse(lines[i]);
@@ -1837,8 +1846,8 @@ async function formatInspectMarkdown(parsed, stepSpec, opts = {}) {
     const needsFull = foundSteps.some(
       s => s.truncated || (Array.isArray(s.tools) && s.tools.some(tc => tc.truncated))
     );
-    if (needsFull && opts.io) {
-      fullAgyMap = await loadFullAntigravityEntries(opts.io, sessionSummary.fullPath);
+    if (needsFull) {
+      fullAgyMap = await loadFullAntigravityEntries(sessionSummary.fullPath);
     }
   }
 

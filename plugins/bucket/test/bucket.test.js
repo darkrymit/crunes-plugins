@@ -4,12 +4,18 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { parseReadme, toId } from '../src/bucket.js'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const pluginDir = path.resolve(__dirname, '..')
 const localCrunesCli = path.resolve(__dirname, '../../../../crunes-cli/dist/cli.js')
+const localTestShim = path.resolve(__dirname, '../../../../crunes-cli/src/test/index.js')
+
+const { installCrunesTestHooks } = await import(
+  fs.existsSync(localTestShim) ? pathToFileURL(localTestShim).href : '@darkrymit/crunes-cli/test'
+)
+installCrunesTestHooks({ pluginRoot: pluginDir })
+const { parseReadme, toId } = await import('../src/bucket.js')
 
 function runCrunes(cwd, args, env) {
   const useLocal = fs.existsSync(localCrunesCli)
