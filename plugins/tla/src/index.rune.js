@@ -1,5 +1,5 @@
 import { fs, os, rune, section, shell } from '@utils'
-import { parseTlcOutput } from './tla.js'
+import { loadViewCode, parseDot, parseTlcOutput, renderStatechart } from './tla.js'
 
 const TLA2TOOLS_URL =
   'https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar'
@@ -34,9 +34,10 @@ export function args(b) {
     .option('-h, --help', 'Show help')
     .command('doctor', 'Check Java and TLC / tla2tools.jar availability')
     .command('install', 'Download tla2tools.jar into ~/.tla/tla2tools.jar')
-    .command('check', 'Run TLC on a TLA+ spec and emit Mermaid counterexamples', c => {
+    .command('check', 'Run TLC on a TLA+ spec and emit a Mermaid statechart', c => {
       c.positional('<spec>', 'Path to .tla specification file')
        .option('--config <file>', 'Optional .cfg model configuration file')
+       .option('--view <file>', 'Optional JS view module (state, step, group, colors, title)')
     })
 }
 
@@ -78,11 +79,22 @@ export async function run(parsed) {
       throw new Error('java not found on PATH. Install JDK 17+ to run TLC.')
     }
 
+    let view = null
+    if (parsed.view) {
+      if (!(await fs.exists(parsed.view))) {
+        throw new Error(`View file not found: ${parsed.view}`)
+      }
+      view = loadViewCode(await fs.read(parsed.view))
+    }
+
     const specAbs = await fs.resolve(parsed.spec)
+    const dumpPrefix = `${specAbs}.statechart`
+    const dotPath = `${dumpPrefix}.dot`
+
     const parts = runner.kind === 'jar'
       ? ['java', '-XX:+UseParallelGC', '-cp', runner.path, 'tlc2.TLC']
       : [runner.path]
-    parts.push('-workers', 'auto', '-cleanup')
+    parts.push('-workers', 'auto', '-cleanup', '-dump', 'dot', dumpPrefix)
     if (parsed.config) {
       if (!(await fs.exists(parsed.config))) {
         throw new Error(`Config file not found: ${parsed.config}`)
@@ -96,19 +108,25 @@ export async function run(parsed) {
     const combined = `${res.stdout || ''}\n${res.stderr || ''}`
     const result = parseTlcOutput(combined)
 
+    let dot = null
+    if (await fs.exists(dotPath)) {
+      dot = parseDot(await fs.read(dotPath))
+    }
+
+    const chart = renderStatechart({ dot, tlcResult: result, view }) || result.mermaid
     const out = [`Status: ${result.status.toUpperCase()}`]
     if (result.violation) out.push(`Violation: ${result.violation}`)
     if (result.stats) {
       out.push(`States: ${result.stats.generated} generated, ${result.stats.distinct} distinct`)
     }
-    if (result.mermaid) {
-      out.push('', '```mermaid', result.mermaid, '```')
+    if (chart) {
+      out.push('', '```mermaid', chart, '```')
     }
     if (result.status === 'error') {
       out.push('', '--- Raw TLC output ---', combined.trim())
     }
 
-    return [section.create('tla:check', { type: 'markdown', content: out.join('\n'), ...result })]
+    return [section.create('tla:check', { type: 'markdown', content: out.join('\n'), ...result, mermaid: chart })]
   }
 
   if (parsed.help || !cmd) {
