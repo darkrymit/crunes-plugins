@@ -1,0 +1,22 @@
+{
+  "format": "1",
+  "runes": {
+    "signal": {
+      "name": "Signal Timers",
+      "description": "Named timers that run a command when they expire; cancel by name or prefix from any folder",
+      "run": {
+        "command": "src/index.rune.js",
+        "permissions": {
+          "allow": [
+            "fs.read:~/.signal/signals.json",
+            "fs.write:~/.signal/signals.json",
+            "fs.write:~/.signal",
+            "shell.job.start:*",
+            "shell.run:*"
+          ],
+          "deny": []
+        }
+      }
+    }
+  }
+}

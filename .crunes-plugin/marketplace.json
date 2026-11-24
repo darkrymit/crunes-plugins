@@ -75,6 +75,14 @@
       "author": { "name": "darkrymit" },
       "source": "./plugins/bucket",
       "category": "global"
+    },
+    {
+      "name": "signal",
+      "description": "Named timers that run a command when they expire; cancel by name or prefix from any folder",
+      "version": "1.0.0",
+      "author": { "name": "darkrymit" },
+      "source": "./plugins/signal",
+      "category": "global"
     }
   ]
 }
