@@ -15,8 +15,11 @@ const { setupCrunesTest } = await import(
   fs.existsSync(localTestShim) ? pathToFileURL(localTestShim).href : '@darkrymit/crunes-cli/test'
 )
 const {
+  fmtDuration,
+  fmtTok,
   formatDigestMarkdown,
   formatInspectMarkdown,
+  formatStatMarkdown,
   listSessions,
   normalizeFormat,
   parseSession,
@@ -86,6 +89,106 @@ describe('session.js (unit + fixture)', () => {
       const inspected = await formatInspectMarkdown(parsed, '1..2', { format: 'extended' })
       assert.match(inspected, /Step #1/)
       assert.match(inspected, /Step #2/)
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('orders by transcript endedAt even when mtimeMs is reversed and formats fmtTok', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-order-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    return (async () => {
+      try {
+        const p1 = path.join(tmp, '.claude', 'projects', 'c--Users-test-Work-org-bubuu-backend')
+        fs.mkdirSync(p1, { recursive: true })
+        const fOld = path.join(p1, 'aaaaaaaa-1111-1111-1111-111111111111.jsonl')
+        const fNew = path.join(p1, 'bbbbbbbb-2222-2222-2222-222222222222.jsonl')
+
+        fs.writeFileSync(fOld, [
+          JSON.stringify({ type: 'user', timestamp: '2026-11-24T10:00:00Z', message: { content: 'Old session' } }),
+          JSON.stringify({
+            type: 'assistant',
+            timestamp: '2026-11-24T10:05:00Z',
+            requestId: 'r1',
+            message: { id: 'm1', model: 'claude-opus-5-5', usage: { input_tokens: 100, cache_creation_input_tokens: 1000, cache_read_input_tokens: 9000, output_tokens: 200 }, content: [{ type: 'text', text: 'Done old' }] },
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            timestamp: '2026-11-24T10:05:01Z',
+            requestId: 'r1',
+            message: { id: 'm1', model: 'claude-opus-5-5', usage: { input_tokens: 100, cache_creation_input_tokens: 1000, cache_read_input_tokens: 9000, output_tokens: 200 }, content: [{ type: 'text', text: 'Done old' }] },
+          }),
+        ].join('\n') + '\n')
+
+        fs.writeFileSync(fNew, [
+          JSON.stringify({ type: 'user', timestamp: '2026-11-24T12:00:00Z', message: { content: 'New session' } }),
+          JSON.stringify({
+            type: 'assistant',
+            timestamp: '2026-11-24T12:15:00Z',
+            requestId: 'r2',
+            message: { id: 'm2', model: 'claude-sonnet-5-5', usage: { input_tokens: 50, cache_creation_input_tokens: 500, cache_read_input_tokens: 2000, output_tokens: 100 }, content: [{ type: 'text', text: 'Done new' }] },
+          }),
+        ].join('\n') + '\n')
+
+        // Reverse filesystem mtime so fOld looks newer on disk
+        const tNew = new Date('2026-11-20T00:00:00Z')
+        const tOld = new Date('2026-11-25T00:00:00Z')
+        fs.utimesSync(fNew, tNew, tNew)
+        fs.utimesSync(fOld, tOld, tOld)
+
+        const recent = await listSessions({ homeDir: tmp, all: true, sort: 'recent' })
+        assert.equal(recent[0].shortId, 'bbbbbbbb')
+        assert.equal(recent[0].project, 'bubuu-backend')
+
+        const byTok = await listSessions({ homeDir: tmp, all: true, sort: 'tokens' })
+        assert.equal(byTok[0].shortId, 'aaaaaaaa')
+        assert.equal(byTok[0].usage.total, 10300) // deduped r1:m1!
+        assert.equal(fmtTok(byTok[0].usage), '10.3k/1.1k/200 (89% cr)')
+        assert.equal(fmtDuration(recent[0].durationMs), '15m')
+
+        const parsed = await parseSession('aaaaaaaa', { homeDir: tmp, harness: 'claude' })
+        const statMd = formatStatMarkdown(parsed)
+        assert.match(statMd, /# Stat aaaaaaaa/)
+        assert.match(statMd, /10\.3k\/1\.1k\/200 \(89% cr\)/)
+        assert.match(statMd, /Hot turns/)
+      } finally {
+        await env.cleanup()
+        fs.rmSync(tmp, { recursive: true, force: true })
+      }
+    })()
+  })
+
+  it('pairs Antigravity GENERIC tool results across interleaved EPHEMERAL_MESSAGE and aggregates tokens', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-agy-eph-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    try {
+      const convId = '22222222-3333-4444-5555-666666666666'
+      const logsDir = path.join(tmp, '.gemini', 'antigravity', 'brain', convId, '.system_generated', 'logs')
+      fs.mkdirSync(logsDir, { recursive: true })
+      fs.writeFileSync(path.join(logsDir, 'transcript.jsonl'), [
+        JSON.stringify({ step_index: 0, type: 'USER_INPUT', created_at: '2026-11-24T10:00:00Z', content: 'Run check' }),
+        JSON.stringify({
+          step_index: 1,
+          type: 'PLANNER_RESPONSE',
+          created_at: '2026-11-24T10:00:10Z',
+          input_tokens: 1000,
+          cache_read_tokens: 9000,
+          output_tokens: 200,
+          thinking: 'Checking...',
+          content: 'Running bash',
+          tool_calls: [{ name: 'run_command', args: { CommandLine: 'npm test' } }],
+        }),
+        JSON.stringify({ step_index: 2, source: 'SYSTEM_SDK', type: 'EPHEMERAL_MESSAGE', created_at: '2026-11-24T10:00:11Z', content: 'Dexter anchor (abc1234)' }),
+        JSON.stringify({ step_index: 3, type: 'GENERIC', status: 'ERROR', created_at: '2026-11-24T10:00:15Z', content: 'Command exited with code 1\nTest failed' }),
+      ].join('\n') + '\n')
+
+      const parsed = await parseSession('22222222', { homeDir: tmp, harness: 'agy' })
+      assert.equal(parsed.meta.errors.length, 1)
+      assert.equal(parsed.meta.usage.total, 10200)
+      const statMd = formatStatMarkdown(parsed)
+      assert.match(statMd, /10\.2k\/1k\/200 \(90% cr\)/)
+      assert.match(statMd, /1 thinking turns/)
     } finally {
       await env.cleanup()
       fs.rmSync(tmp, { recursive: true, force: true })

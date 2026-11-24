@@ -1,13 +1,16 @@
 import { fs, rune, section } from '@utils'
 import {
+  fmtDuration,
+  fmtTok,
   formatDigestMarkdown,
   formatInspectMarkdown,
+  formatStatMarkdown,
   listSessions,
   parseSession,
 } from './session.js'
 
-function fmtAge(mtimeMs) {
-  const diffSec = Math.max(0, Math.floor((Date.now() - mtimeMs) / 1000))
+function fmtAge(ms) {
+  const diffSec = Math.max(0, Math.floor((Date.now() - ms) / 1000))
   if (diffSec < 60) return `${diffSec}s ago`
   const diffMin = Math.floor(diffSec / 60)
   if (diffMin < 60) return `${diffMin}m ago`
@@ -16,13 +19,6 @@ function fmtAge(mtimeMs) {
   const diffDays = Math.floor(diffHr / 24)
   return `${diffDays}d ago`
 }
-
-function fmtSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
 
 export function args(b) {
   return b
@@ -33,6 +29,7 @@ export function args(b) {
        .option('-a, --all', 'Show sessions across all projects', false)
        .option('--harness <name>', 'Filter by harness (claude | agy)')
        .option('--subagents', 'Include child subagent sessions', false)
+       .option('-s, --sort <by>', 'Sort by: recent | tokens | duration | size', 'recent')
        .option('-n, --limit <number>', 'Maximum sessions to return', '15')
     })
     .command('digest', 'Transform a session transcript into a Markdown spine', c => {
@@ -48,6 +45,12 @@ export function args(b) {
        .option('-t, --tail <turns>', 'Only include the last N turns')
        .option('-p, --project <name>', 'Project filter when resolving latest')
        .option('--harness <name>', 'Harness filter (claude | agy)')
+    })
+    .command('stat', 'Show token, model, tool, and hot-turn usage for a single session', c => {
+      c.positional('[id]', 'Session ID, path, or latest')
+       .option('-p, --project <name>', 'Project filter when resolving latest')
+       .option('--harness <name>', 'Harness filter (claude | agy)')
+       .option('--json', 'Include structured usage payload', false)
     })
     .command('inspect', 'Inspect step details and outputs', c => {
       c.positional('<id>', 'Session ID or path')
@@ -73,6 +76,7 @@ export async function run(parsed) {
       all: Boolean(parsed.all),
       harness: parsed.harness,
       subagents: Boolean(parsed.subagents),
+      sort: parsed.sort || 'recent',
       query: parsed.query,
       limit: Number(parsed.limit) || 15,
     })
@@ -84,11 +88,12 @@ export async function run(parsed) {
     const lines = items.map(s => {
       const hBadge = s.harness === 'claude' ? 'claude' : 'agy   '
       const projBadge = (s.project || 'unknown').padEnd(14).slice(0, 14)
-      const ageBadge = fmtAge(s.mtimeMs).padStart(7)
-      const sizeBadge = fmtSize(s.size).padStart(7)
+      const ageBadge = fmtAge(s.endedMs || s.mtimeMs).padStart(7)
+      const durBadge = fmtDuration(s.durationMs || 0).padStart(6)
+      const tokBadge = fmtTok(s.usage).padEnd(25)
       const subPrefix = s.isSubagent ? `[sub<-${(s.parentId || '').slice(0, 6)}] ` : ''
       const title = s.title || s.firstPrompt || ''
-      return `${s.shortId}  ${hBadge}  ${projBadge}  ${ageBadge}  ${sizeBadge}  ${subPrefix}${title}`
+      return `${s.shortId}  ${hBadge}  ${projBadge}  ${ageBadge}  ${durBadge}  ${tokBadge}  ${subPrefix}${title}`
     })
 
     return [section.create('session', { type: 'markdown', content: lines.join('\n'), sessions: items })]
@@ -104,6 +109,30 @@ export async function run(parsed) {
     return [section.create('session', { type: 'markdown', content: md })]
   }
 
+  if (cmd === 'stat') {
+    const sessionData = await parseSession(parsed.id || 'latest', {
+      cwd: await fs.resolve('.'),
+      project: parsed.project,
+      harness: parsed.harness,
+    })
+    const md = formatStatMarkdown(sessionData)
+    const payload = { type: 'markdown', content: md }
+    if (parsed.json) {
+      payload.stat = {
+        id: sessionData.meta.id,
+        harness: sessionData.meta.harness,
+        project: sessionData.meta.project,
+        durationMs: sessionData.meta.durationMs,
+        usage: sessionData.meta.usage,
+        modelUsage: sessionData.meta.modelUsage,
+        toolCounts: sessionData.meta.toolCounts,
+        compactions: sessionData.meta.compactions.length,
+        thinkingTurns: sessionData.meta.thinkingTurns,
+      }
+    }
+    return [section.create('session', payload)]
+  }
+
   if (cmd === 'inspect' || cmd === 'step') {
     const sessionData = await parseSession(parsed.id, {
       cwd: await fs.resolve('.'),
@@ -117,5 +146,5 @@ export async function run(parsed) {
   if (parsed.help || !cmd) {
     return rune.helpSection()
   }
-  throw new Error('use one of: list, digest, read, inspect, step')
+  throw new Error('use one of: list, digest, read, stat, inspect, step')
 }

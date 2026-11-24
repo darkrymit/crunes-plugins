@@ -110,6 +110,75 @@ function inferProjectFromText(text) {
   return null;
 }
 
+function inferProjectFromClaudeDir(projDirName) {
+  if (!projDirName) return 'unknown';
+  const m = /-(?:Playground|Work|Documents|Homelab|repos|projects)-(?:[A-Za-z0-9_.-]+-)?([A-Za-z0-9_.-]+)$/i.exec(projDirName);
+  // Prefer everything after Playground/Documents/Homelab, or after Work/<org>/
+  const pgMatch = /-(?:Playground|Documents|Homelab)-(.+)$/i.exec(projDirName);
+  if (pgMatch) return pgMatch[1];
+  const workMatch = /-Work-[^-]+-(.+)$/i.exec(projDirName);
+  if (workMatch) return workMatch[1];
+  if (m) return m[1];
+  return projDirName.split('-').pop() || 'unknown';
+}
+
+function emptyUsage() {
+  return { input: 0, cacheCreate: 0, cacheRead: 0, output: 0, writeOrUncached: 0, total: 0, cacheHitPct: 0 };
+}
+
+function finalizeUsage(u) {
+  const input = u.input || 0;
+  const cacheCreate = u.cacheCreate || 0;
+  const cacheRead = u.cacheRead || 0;
+  const output = u.output || 0;
+  const writeOrUncached = input + cacheCreate;
+  const total = writeOrUncached + cacheRead + output;
+  const promptTotal = writeOrUncached + cacheRead;
+  const cacheHitPct = promptTotal > 0 ? Math.round((cacheRead / promptTotal) * 100) : 0;
+  return { input, cacheCreate, cacheRead, output, writeOrUncached, total, cacheHitPct };
+}
+
+function addUsage(acc, delta) {
+  acc.input += delta.input || 0;
+  acc.cacheCreate += delta.cacheCreate || 0;
+  acc.cacheRead += delta.cacheRead || 0;
+  acc.output += delta.output || 0;
+}
+
+function fmtCompactNum(n) {
+  const v = Number(n) || 0;
+  if (v < 1000) return String(Math.round(v));
+  if (v < 100_000) return `${(v / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+  if (v < 1_000_000) return `${Math.round(v / 1000)}k`;
+  if (v < 1_000_000_000) return `${(v / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  return `${(v / 1_000_000_000).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')}B`;
+}
+
+function fmtTok(u) {
+  const f = finalizeUsage(u || {});
+  if (f.total === 0) return '0/0/0 (0% cr)';
+  return `${fmtCompactNum(f.total)}/${fmtCompactNum(f.writeOrUncached)}/${fmtCompactNum(f.output)} (${f.cacheHitPct}% cr)`;
+}
+
+function fmtDuration(ms) {
+  const sec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) {
+    const remS = sec % 60;
+    return remS > 0 && min < 10 ? `${min}m${String(remS).padStart(2, '0')}s` : `${min}m`;
+  }
+  const hr = Math.floor(min / 60);
+  const remM = min % 60;
+  return remM > 0 ? `${hr}h${String(remM).padStart(2, '0')}m` : `${hr}h`;
+}
+
+function toMs(iso, fallbackMs = 0) {
+  if (!iso) return fallbackMs;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? fallbackMs : t;
+}
+
 function oneLine(text, maxLen = 100) {
   if (!text) return '';
   const flat = String(text).replace(/\s+/g, ' ').trim();
@@ -366,8 +435,42 @@ async function summarizeClaudeFile(filePath, stat) {
   for (const l of headLines) inspectLine(l);
   for (const l of tailLines) inspectLine(l);
 
+  // Stream-scan full file for accurate deduplicated token totals & true endedAt
+  const usageAcc = emptyUsage();
+  const seenReqMsg = new Set();
+  const fullRaw = await fs.read(filePath, { throw: false });
+  if (fullRaw) {
+    for (const line of fullRaw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      let o;
+      try { o = JSON.parse(line); } catch (_) { continue; }
+      if (!startedAt && o.timestamp) startedAt = o.timestamp;
+      if (o.timestamp) endedAt = o.timestamp;
+      if (!cwd && o.cwd) cwd = o.cwd;
+      if (o.type === 'assistant' && o.message && o.message.usage) {
+        const rid = o.requestId || '';
+        const mid = o.message.id || '';
+        if (rid && mid) {
+          const k = `${rid}:${mid}`;
+          if (seenReqMsg.has(k)) continue;
+          seenReqMsg.add(k);
+        }
+        const u = o.message.usage;
+        addUsage(usageAcc, {
+          input: u.input_tokens || 0,
+          cacheCreate: u.cache_creation_input_tokens || 0,
+          cacheRead: u.cache_read_input_tokens || 0,
+          output: u.output_tokens || 0
+        });
+      }
+    }
+  }
+
+  const finalStarted = startedAt || stat.birthtime.toISOString();
+  const finalEnded = endedAt || stat.mtime.toISOString();
+  const durationMs = Math.max(0, toMs(finalEnded, stat.mtimeMs) - toMs(finalStarted, stat.birthtimeMs));
   const projDirPath = inSubagentsDir ? path.dirname(path.dirname(path.dirname(filePath))) : path.dirname(filePath);
-  const project = cwd ? path.basename(cwd) : path.basename(projDirPath).split('-').pop();
+  const project = cwd ? path.basename(cwd) : inferProjectFromClaudeDir(path.basename(projDirPath));
   return {
     id,
     shortId: id.slice(0, 8),
@@ -380,8 +483,11 @@ async function summarizeClaudeFile(filePath, stat) {
     firstPrompt: firstPrompt || '',
     isSubagent,
     parentId: parentId || null,
-    startedAt: startedAt || stat.birthtime.toISOString(),
-    endedAt: endedAt || stat.mtime.toISOString(),
+    startedAt: finalStarted,
+    endedAt: finalEnded,
+    endedMs: toMs(finalEnded, stat.mtimeMs),
+    durationMs,
+    usage: finalizeUsage(usageAcc),
     mtimeMs: stat.mtimeMs,
     size: stat.size,
     path: filePath
@@ -453,7 +559,29 @@ async function summarizeAgyFile(filePath, stat) {
   for (const l of headLines) inspectLine(l);
   for (const l of tailLines) inspectLine(l);
 
+  const usageAcc = emptyUsage();
+  const fullRaw = await fs.read(filePath, { throw: false });
+  if (fullRaw) {
+    for (const line of fullRaw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      let o;
+      try { o = JSON.parse(line); } catch (_) { continue; }
+      if (!startedAt && o.created_at) startedAt = o.created_at;
+      if (o.created_at) endedAt = o.created_at;
+      if (o.input_tokens || o.cache_read_tokens || o.output_tokens) {
+        addUsage(usageAcc, {
+          input: o.input_tokens || 0,
+          cacheRead: o.cache_read_tokens || 0,
+          output: o.output_tokens || 0
+        });
+      }
+    }
+  }
+
   const isSubagent = Boolean(step0Sender && !hasUserInput);
+  const finalStarted = startedAt || stat.birthtime.toISOString();
+  const finalEnded = endedAt || stat.mtime.toISOString();
+  const durationMs = Math.max(0, toMs(finalEnded, stat.mtimeMs) - toMs(finalStarted, stat.birthtimeMs));
 
   return {
     id,
@@ -468,8 +596,11 @@ async function summarizeAgyFile(filePath, stat) {
     isSubagent,
     parentId: isSubagent ? step0Sender : null,
     stepCount,
-    startedAt: startedAt || stat.birthtime.toISOString(),
-    endedAt: endedAt || stat.mtime.toISOString(),
+    startedAt: finalStarted,
+    endedAt: finalEnded,
+    endedMs: toMs(finalEnded, stat.mtimeMs),
+    durationMs,
+    usage: finalizeUsage(usageAcc),
     mtimeMs: stat.mtimeMs,
     size: stat.size,
     path: filePath,
@@ -565,26 +696,40 @@ async function listSessions(opts = {}) {
     return true;
   };
 
-  // Lazy hydration: only read file headers in mtime order until limit is reached
-  const results = [];
+  const validSorts = new Set(['recent', 'tokens', 'duration', 'size']);
+  const sortBy = opts.sort ? String(opts.sort).toLowerCase().trim() : 'recent';
+  if (!validSorts.has(sortBy)) {
+    throw new Error(`invalid sort "${opts.sort}" (expected: recent, tokens, duration, or size)`);
+  }
+
   const hydratedCache = [];
   const activeProjNeedle = explicitProject || cwdBase;
 
   for (const stub of stubs) {
     const s = await hydrateStub(stub);
     hydratedCache.push(s);
-    if (matchesFilter(s, activeProjNeedle)) {
-      results.push(s);
-      if (results.length >= limit) return results;
+  }
+
+  const sortList = (arr) => {
+    const copy = [...arr];
+    if (sortBy === 'tokens') {
+      copy.sort((a, b) => (b.usage?.total || 0) - (a.usage?.total || 0));
+    } else if (sortBy === 'duration') {
+      copy.sort((a, b) => (b.durationMs || 0) - (a.durationMs || 0));
+    } else if (sortBy === 'size') {
+      copy.sort((a, b) => (b.size || 0) - (a.size || 0));
+    } else {
+      copy.sort((a, b) => (b.endedMs || b.mtimeMs || 0) - (a.endedMs || a.mtimeMs || 0));
     }
+    return copy;
+  };
+
+  let matched = hydratedCache.filter(s => matchesFilter(s, activeProjNeedle));
+  if (matched.length === 0 && cwdBase && !explicitProject && !query) {
+    matched = hydratedCache.filter(s => includeSubagents || !s.isSubagent);
   }
 
-  // Fallback: if implicit cwd project filter matched nothing, return top recent non-subagent sessions
-  if (results.length === 0 && cwdBase && !explicitProject && !query) {
-    return hydratedCache.filter(s => includeSubagents || !s.isSubagent).slice(0, limit);
-  }
-
-  return results;
+  return sortList(matched).slice(0, limit);
 }
 
 async function resolveSession(idOrLatest, opts = {}) {
@@ -732,7 +877,12 @@ async function parseAntigravityTranscript(sessionSummary) {
     startedAt: sessionSummary.startedAt,
     endedAt: sessionSummary.endedAt,
     stepCount: entries.length,
+    durationMs: sessionSummary.durationMs || 0,
     models: sessionSummary.model ? [sessionSummary.model] : [],
+    usage: emptyUsage(),
+    modelUsage: {},
+    toolCounts: {},
+    thinkingTurns: 0,
     anchors: [],
     compactions: [],
     skills: [],
@@ -832,15 +982,37 @@ async function parseAntigravityTranscript(sessionSummary) {
     if (e.type === 'PLANNER_RESPONSE') {
       const rawCalls = Array.isArray(e.tool_calls) ? e.tool_calls : [];
       const tools = [];
+      const stepUsage = {
+        input: e.input_tokens || 0,
+        cacheCreate: 0,
+        cacheRead: e.cache_read_tokens || 0,
+        output: e.output_tokens || 0
+      };
+      addUsage(meta.usage, stepUsage);
+      const stepModel = meta.models[meta.models.length - 1] || 'antigravity';
+      if (!meta.modelUsage[stepModel]) meta.modelUsage[stepModel] = { ...emptyUsage(), turns: 0 };
+      addUsage(meta.modelUsage[stepModel], stepUsage);
+      meta.modelUsage[stepModel].turns += 1;
+      if (e.thinking) meta.thinkingTurns += 1;
+
+      // Scan forward for GENERIC results before the next PLANNER_RESPONSE or USER_INPUT
+      const genericResults = [];
+      for (let j = i + 1; j < entries.length && genericResults.length < rawCalls.length; j++) {
+        const cand = entries[j];
+        if (cand.type === 'PLANNER_RESPONSE' || cand.type === 'USER_INPUT') break;
+        if (cand.type === 'GENERIC') genericResults.push({ entry: cand, pos: j });
+      }
 
       for (let k = 0; k < rawCalls.length; k++) {
         const rc = rawCalls[k];
         const tName = rc.name || rc.tool_name || 'tool';
         const tArgs = rc.args || rc.parameters || {};
         const norm = normalizeToolCall(tName, tArgs, meta.cwd);
-        const resultEntry = entries[i + 1 + k];
-        const resultStepIdx = resultEntry && resultEntry.type === 'GENERIC'
-          ? (typeof resultEntry.step_index === 'number' ? resultEntry.step_index : i + 1 + k)
+        meta.toolCounts[norm.name] = (meta.toolCounts[norm.name] || 0) + 1;
+        const matched = genericResults[k];
+        const resultEntry = matched ? matched.entry : null;
+        const resultStepIdx = resultEntry
+          ? (typeof resultEntry.step_index === 'number' ? resultEntry.step_index : matched.pos)
           : stepIdx;
 
         norm.step = stepIdx;
@@ -881,6 +1053,7 @@ async function parseAntigravityTranscript(sessionSummary) {
         timestamp: ts,
         text: (e.content || '').trim(),
         thinking: (e.thinking || '').trim(),
+        usage: finalizeUsage(stepUsage),
         tools,
         truncated: Array.isArray(e.truncated_fields) && e.truncated_fields.length > 0
       });
@@ -923,7 +1096,12 @@ async function parseClaudeTranscript(sessionSummary) {
     startedAt: sessionSummary.startedAt,
     endedAt: sessionSummary.endedAt,
     stepCount: 0,
+    durationMs: sessionSummary.durationMs || 0,
     models: sessionSummary.model ? [sessionSummary.model] : [],
+    usage: emptyUsage(),
+    modelUsage: {},
+    toolCounts: {},
+    thinkingTurns: 0,
     anchors: [],
     compactions: [],
     skills: [],
@@ -979,6 +1157,7 @@ async function parseClaudeTranscript(sessionSummary) {
 
   const steps = [];
   let stepCounter = 0;
+  const seenReqMsg = new Set();
 
   const cleanSubagentBody = (raw) => {
     if (raw.includes('<task-notification>')) {
@@ -1108,6 +1287,28 @@ async function parseClaudeTranscript(sessionSummary) {
       let thinking = '';
       const tools = [];
       const currentIdx = stepCounter;
+      let stepUsage = emptyUsage();
+      if (e.message.usage) {
+        const rid = e.requestId || '';
+        const mid = e.message.id || '';
+        const key = (rid && mid) ? `${rid}:${mid}` : null;
+        if (!key || !seenReqMsg.has(key)) {
+          if (key) seenReqMsg.add(key);
+          const u = e.message.usage;
+          const delta = {
+            input: u.input_tokens || 0,
+            cacheCreate: u.cache_creation_input_tokens || 0,
+            cacheRead: u.cache_read_input_tokens || 0,
+            output: u.output_tokens || 0
+          };
+          addUsage(meta.usage, delta);
+          stepUsage = finalizeUsage(delta);
+          const mName = e.requestedModel || e.message.model || 'claude';
+          if (!meta.modelUsage[mName]) meta.modelUsage[mName] = { ...emptyUsage(), turns: 0 };
+          addUsage(meta.modelUsage[mName], delta);
+          meta.modelUsage[mName].turns += 1;
+        }
+      }
 
       for (const b of e.message.content) {
         if (b.type === 'text' && b.text) {
@@ -1143,6 +1344,7 @@ async function parseClaudeTranscript(sessionSummary) {
             meta.hookBlocks.push({ step: currentIdx, tool: norm.name, target: norm.target, reason: norm.errorSummary });
           }
 
+          meta.toolCounts[norm.name] = (meta.toolCounts[norm.name] || 0) + 1;
           tools.push(norm);
         }
       }
@@ -1150,8 +1352,13 @@ async function parseClaudeTranscript(sessionSummary) {
       if (text || thinking || tools.length > 0) {
         // Merge consecutive single-block assistant lines that belong to the same logical step if previous step is assistant with no text and only thinking
         const prev = steps[steps.length - 1];
+        if (thinking) meta.thinkingTurns += 1;
         if (prev && prev.kind === 'assistant' && !prev.text && prev.tools.length === 0 && !thinking && (text || tools.length > 0)) {
           prev.text = text;
+          prev.endTimestamp = ts || prev.endTimestamp;
+          const merged = { ...prev.usage };
+          addUsage(merged, stepUsage);
+          prev.usage = finalizeUsage(merged);
           for (const tc of tools) {
             tc.step = prev.index;
             tc.resultStep = prev.index;
@@ -1162,8 +1369,10 @@ async function parseClaudeTranscript(sessionSummary) {
             index: stepCounter++,
             kind: 'assistant',
             timestamp: ts,
+            endTimestamp: ts,
             text,
             thinking,
+            usage: stepUsage,
             tools,
             truncated: false
           });
@@ -1263,6 +1472,11 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
   const flushAssistant = () => {
     if (!currentAssistant) return;
     currentAssistant.toolRuns = foldToolRuns(currentAssistant.tools);
+    currentAssistant.usage = finalizeUsage(currentAssistant.usageAcc);
+    currentAssistant.durationMs = Math.max(
+      0,
+      toMs(currentAssistant.endTimestamp, 0) - toMs(currentAssistant.timestamp, 0)
+    );
     turns.push(currentAssistant);
     currentAssistant = null;
   };
@@ -1301,6 +1515,8 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
           startStep: s.index,
           endStep: s.index,
           timestamp: s.timestamp,
+          endTimestamp: s.timestamp,
+          usageAcc: emptyUsage(),
           tools: [],
           subagentReplies: [],
           thinkings: [],
@@ -1308,6 +1524,7 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
         };
       }
       currentAssistant.endStep = s.index;
+      if (s.timestamp) currentAssistant.endTimestamp = s.timestamp;
       currentAssistant.subagentReplies.push({
         step: s.index,
         sender: s.sender,
@@ -1325,6 +1542,8 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
           startStep: s.index,
           endStep: s.index,
           timestamp: s.timestamp,
+          endTimestamp: s.endTimestamp || s.timestamp,
+          usageAcc: emptyUsage(),
           tools: [],
           subagentReplies: [],
           thinkings: [],
@@ -1332,6 +1551,8 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
         };
       }
       currentAssistant.endStep = s.index;
+      if (s.endTimestamp || s.timestamp) currentAssistant.endTimestamp = s.endTimestamp || s.timestamp;
+      if (s.usage) addUsage(currentAssistant.usageAcc, s.usage);
       for (const tc of s.tools) {
         currentAssistant.tools.push(tc);
       }
@@ -1346,6 +1567,13 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
   flushAssistant();
 
   meta.turnCount = userTurnNum;
+  meta.usage = finalizeUsage(meta.usage);
+  for (const m of Object.keys(meta.modelUsage)) {
+    meta.modelUsage[m] = { ...finalizeUsage(meta.modelUsage[m]), turns: meta.modelUsage[m].turns };
+  }
+  if (!meta.durationMs && meta.startedAt && meta.endedAt) {
+    meta.durationMs = Math.max(0, toMs(meta.endedAt, 0) - toMs(meta.startedAt, 0));
+  }
 
   // Synthesize Cold-Pickup Coordinates
   const touchedMap = new Map();
@@ -1419,18 +1647,35 @@ async function parseSession(sessionOrId, opts = {}) {
   return parseClaudeTranscript(summary);
 }
 
+function fmtDateLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function fmtTime(iso) {
   if (!iso) return '';
-  const m = /T(\d{2}:\d{2})/.exec(iso);
-  return m ? m[1] : iso.slice(0, 16);
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    const m = /T(\d{2}:\d{2})/.exec(iso);
+    return m ? m[1] : iso.slice(0, 16);
+  }
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function fmtSpan(startIso, endIso) {
   if (!startIso) return '';
-  const datePart = startIso.slice(0, 10);
+  const sDate = fmtDateLocal(startIso);
   const sTime = fmtTime(startIso);
+  if (!endIso) return `${sDate} ${sTime}`;
+  const eDate = fmtDateLocal(endIso);
   const eTime = fmtTime(endIso);
-  return sTime && eTime && sTime !== eTime ? `${datePart} ${sTime}..${eTime}` : `${datePart} ${sTime}`;
+  if (sDate !== eDate) return `${sDate} ${sTime}..${eDate} ${eTime}`;
+  return sTime && eTime && sTime !== eTime ? `${sDate} ${sTime}..${eTime}` : `${sDate} ${sTime}`;
 }
 
 function stepLabel(start, end) {
@@ -1599,8 +1844,9 @@ function formatDigestMarkdown(parsed, opts = {}) {
         continue;
       }
 
+      const durSuffix = t.durationMs >= 1000 ? ` (${fmtDuration(t.durationMs)})` : '';
       lines.push(
-        `### [A #${t.turnNum} · steps ${stepLabel(t.startStep, t.endStep)}${t.timestamp ? ` · ${fmtTime(t.timestamp)}` : ''}]`
+        `### [A #${t.turnNum} · steps ${stepLabel(t.startStep, t.endStep)}${t.timestamp ? ` · ${fmtTime(t.timestamp)}${durSuffix}` : ''}]`
       );
 
       // 1. Thinking blocks (only in 'full' format)
@@ -1924,14 +2170,71 @@ async function formatInspectMarkdown(parsed, stepSpec, opts = {}) {
   return lines.join('\n');
 }
 
+function formatStatMarkdown(parsed) {
+  const { meta, turns } = parsed;
+  const lines = [];
+  const branchInfo = meta.branch ? ` (${meta.branch})` : '';
+  const durStr = fmtDuration(meta.durationMs);
+  lines.push(
+    `# Stat ${meta.shortId} (${meta.harness} · ${meta.project}${branchInfo} · ${fmtSpan(meta.startedAt, meta.endedAt)} · ${durStr} · ${fmtTok(meta.usage)})`
+  );
+  lines.push(
+    `- **Tokens:** \`${fmtTok(meta.usage)}\` (in ${fmtCompactNum(meta.usage.input)}, cacheWrite ${fmtCompactNum(meta.usage.cacheCreate)}, cacheRead ${fmtCompactNum(meta.usage.cacheRead)}, out ${fmtCompactNum(meta.usage.output)})`
+  );
+
+  const modelEntries = Object.entries(meta.modelUsage || {}).sort((a, b) => b[1].total - a[1].total);
+  if (modelEntries.length > 0) {
+    const mStr = modelEntries
+      .map(([m, u]) => {
+        const pct = meta.usage.total > 0 ? Math.round((u.total / meta.usage.total) * 100) : 0;
+        return `\`${m}\` (${u.turns} turns, ${pct}%, ${fmtTok(u)})`;
+      })
+      .join(', ');
+    lines.push(`- **Models:** ${mStr}`);
+  }
+
+  const compStr = meta.compactions.length > 0
+    ? `${meta.compactions.length} (${meta.compactions.map(c => `#${c.step}`).join(', ')})`
+    : '0';
+  lines.push(`- **Compactions / Thinking:** ${compStr} compactions · ${meta.thinkingTurns || 0} thinking turns`);
+
+  const toolEntries = Object.entries(meta.toolCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (toolEntries.length > 0) {
+    lines.push(`- **Top tools:** ${toolEntries.map(([name, cnt]) => `\`${name}\` (${cnt})`).join(', ')}`);
+  }
+
+  const hotTurns = turns
+    .filter(t => t.kind === 'assistant' && t.usage && t.usage.total > 0)
+    .sort((a, b) => b.usage.total - a.usage.total)
+    .slice(0, 5);
+
+  if (hotTurns.length > 0) {
+    lines.push('');
+    lines.push('## Hot turns');
+    for (const t of hotTurns) {
+      const dur = t.durationMs >= 1000 ? ` · ${fmtDuration(t.durationMs)}` : '';
+      const stepsStr = stepLabel(t.startStep, t.endStep);
+      const inspectRange = t.startStep === t.endStep ? `${t.startStep}` : `${t.startStep}..${t.endStep}`;
+      lines.push(
+        `- \`#${t.turnNum}\` [steps ${stepsStr}${dur}] \`${fmtTok(t.usage)}\` → \`crunes -p run session inspect ${meta.shortId} ${inspectRange}\``
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
+
 export {
   listSessions,
   resolveSession,
   parseSession,
   formatDigestMarkdown,
   formatInspectMarkdown,
+  formatStatMarkdown,
   cleanUserText,
   parseStepRangeSpec,
   normalizeFormat,
-  truncateSandwich
+  truncateSandwich,
+  fmtTok,
+  fmtDuration
 }
