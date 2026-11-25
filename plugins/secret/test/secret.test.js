@@ -61,6 +61,8 @@ describe('mask (pure unit)', () => {
         '; WEBHOOK_SECRET = fakehookvalue',
         '# PORT=8080',
         '# Run with: ./mvnw quarkus:dev',
+        '# Auth: see the wiki',
+        '# Secret: stored in vault',
       ].join('\n'),
       '.env'
     )
@@ -70,6 +72,8 @@ describe('mask (pure unit)', () => {
     assert.match(out, /^#; {2}OLD_API_KEY=fa••••••e1$/m)
     assert.match(out, /^# PORT=8080$/m)
     assert.match(out, /^# Run with: \.\/mvnw quarkus:dev$/m)
+    assert.match(out, /^# Auth: see the wiki$/m)
+    assert.match(out, /^# Secret: stored in vault$/m)
   })
 
   it('treats names that are or end in key as sensitive, but not words that merely contain it', () => {

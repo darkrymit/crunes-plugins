@@ -7,7 +7,7 @@ const TOKEN_SHAPE =
 
 const KEY_BLOCK_BEGIN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY/
 const KEY_BLOCK_END = /-----END [A-Z0-9 ]*PRIVATE KEY/
-const COMMENTED_ASSIGNMENT = /^(\s*[#;][#;\s]*(?:export\s+)?)([A-Za-z_][\w.-]*)\s*[=:](.*)$/
+const COMMENTED_ASSIGNMENT = /^(\s*[#;][#;\s]*(?:export\s+)?)([A-Za-z_][\w.-]*)\s*([=:])(.*)$/
 
 function extname(filename) {
   if (!filename) return ''
@@ -45,7 +45,16 @@ export function maskFor(key, value) {
 function maskComment(line) {
   const match = COMMENTED_ASSIGNMENT.exec(line)
   if (!match || !SENSITIVE_KEY.test(match[2])) return maskText(line)
-  return `${match[1]}${match[2]}=${maskFor(match[2], match[3])}`
+  const [, prefix, key, sep, rawVal] = match
+  const trimmedVal = rawVal.trim()
+  const isQuoted =
+    (trimmedVal.startsWith('"') && trimmedVal.endsWith('"')) ||
+    (trimmedVal.startsWith("'") && trimmedVal.endsWith("'"))
+  // Treat `# Auth: see the wiki` as prose rather than a key=value assignment when `:` has multi-word unquoted text
+  if (sep === ':' && !isQuoted && /\s/.test(trimmedVal)) {
+    return maskText(line)
+  }
+  return `${prefix}${key}=${maskFor(key, rawVal)}`
 }
 
 export function maskJson(value, key = '') {

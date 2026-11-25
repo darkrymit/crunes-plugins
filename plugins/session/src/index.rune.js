@@ -7,6 +7,7 @@ import {
   formatStatMarkdown,
   listSessions,
   parseSession,
+  searchSessions,
 } from './session.js'
 
 function fmtAge(ms) {
@@ -31,6 +32,14 @@ export function args(b) {
        .option('--subagents', 'Include child subagent sessions', false)
        .option('-s, --sort <by>', 'Sort by: recent | tokens | duration | size', 'recent')
        .option('-n, --limit <number>', 'Maximum sessions to return', '15')
+    })
+    .command('search', 'Search session transcripts by text or regex', c => {
+      c.positional('<query>', 'Search text or /regex/flags')
+       .option('-p, --project <name>', 'Filter by project or workspace name')
+       .option('-a, --all', 'Search sessions across all projects', false)
+       .option('--harness <name>', 'Filter by harness (claude | agy | codex)')
+       .option('--subagents', 'Include child subagent sessions', false)
+       .option('-n, --limit <number>', 'Maximum matching hits to return', '20')
     })
     .command('digest', 'Transform a session transcript into a Markdown spine', c => {
       c.positional('[id]', 'Session ID, path, or latest')
@@ -99,6 +108,26 @@ export async function run(parsed) {
     return [section.create('session', { type: 'markdown', content: lines.join('\n'), sessions: items })]
   }
 
+  if (cmd === 'search') {
+    const hits = await searchSessions(parsed.query, {
+      cwd: await fs.resolve('.'),
+      project: parsed.project,
+      all: Boolean(parsed.all),
+      harness: parsed.harness,
+      subagents: Boolean(parsed.subagents),
+      limit: Number(parsed.limit) || 20,
+    })
+    if (hits.length === 0) {
+      return [section.create('session', { type: 'markdown', content: 'No matching transcript lines found.', hits: [] })]
+    }
+    const lines = hits.map(h => {
+      const hBadge = h.harness === 'claude' ? 'claude' : (h.harness === 'codex' ? 'codex ' : 'agy   ')
+      const loc = h.turnNum ? `U/A#${h.turnNum} step #${h.step}` : `step #${h.step}`
+      return `${h.shortId}  ${hBadge}  ${(h.project || 'unknown').padEnd(14).slice(0, 14)}  [${loc} · ${h.kind}]  ${h.snippet}`
+    })
+    return [section.create('session', { type: 'markdown', content: lines.join('\n'), hits })]
+  }
+
   if (cmd === 'digest' || cmd === 'read') {
     const sessionData = await parseSession(parsed.id || 'latest', {
       cwd: await fs.resolve('.'),
@@ -146,5 +175,5 @@ export async function run(parsed) {
   if (parsed.help || !cmd) {
     return rune.helpSection()
   }
-  throw new Error('use one of: list, digest, read, stat, inspect, step')
+  throw new Error('use one of: list, search, digest, read, stat, inspect, step')
 }

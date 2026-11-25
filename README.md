@@ -33,7 +33,7 @@ crunes plugin install crunes-plugins@kb
 | [`media`](plugins/media) | Downloads, transcribes, packs/unpacks (`.mcf`), and prepares video media and keyframe timelines. |
 | [`source`](plugins/source) | Checks whether registered outside sources (channels, git repos, sites, files) moved since last recorded. |
 | [`bucket`](plugins/bucket) | Registers folders anywhere on disk (default root `~/.bucket`) and finds them by id, label, or README. |
-
+| [`signal`](plugins/signal) | Named timers that run a command when they expire; cancel by name or prefix from any folder. |
 | [`tla`](plugins/tla) | Runs TLC model checking on TLA+ specs and renders counterexamples as Mermaid statecharts. |
 
 ## Project Plugins

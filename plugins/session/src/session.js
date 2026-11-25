@@ -312,6 +312,9 @@ function normalizeToolCall(rawName, rawArgs, cwd) {
   if (lower === 'bash' || lower === 'run_command' || lower === 'exec_command' || lower === 'shell' || lower === 'exec') {
     let cmd = args.command || args.CommandLine || args.cmd || args.input || '';
     if (lower === 'exec' && typeof cmd === 'string') {
+      if (/write_stdin\(\s*\{[^}]*chars\s*:\s*""/.test(cmd) && !/exec_command\(/.test(cmd)) {
+        return { name: 'poll', rawName, target: 'write_stdin', command: cmd, args };
+      }
       const m = /exec_command\(\s*\{\s*cmd\s*:\s*"([^"]+)"/.exec(cmd);
       if (m) cmd = m[1];
     }
@@ -811,10 +814,53 @@ async function discoverSessionStubs(opts = {}) {
   return stubs;
 }
 
-async function hydrateStub(stub) {
-  if (stub.harness === 'claude') return summarizeClaudeFile(stub.path, stub.stat);
-  if (stub.harness === 'codex') return summarizeCodexFile(stub.path, stub.stat);
-  return summarizeAgyFile(stub.path, stub.stat);
+function resolveCachePath(opts = {}) {
+  if (opts.noCache) return null;
+  if (opts.cacheFile) return opts.cacheFile;
+  const home = opts.homeDir || '~';
+  return path.join(home, '.crunes', 'cache', 'session-index.json');
+}
+
+async function loadSessionCache(cachePath) {
+  if (!cachePath) return {};
+  try {
+    if (!(await fs.exists(cachePath))) return {};
+    const raw = await fs.read(cachePath, { throw: false });
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+async function saveSessionCache(cachePath, cacheObj) {
+  if (!cachePath || !fs.write) return;
+  try {
+    await fs.write(cachePath, JSON.stringify(cacheObj));
+  } catch (_) {}
+}
+
+async function hydrateStub(stub, cacheObj = null) {
+  const cached = cacheObj && cacheObj[stub.path];
+  if (
+    cached &&
+    cached.size === stub.stat.size &&
+    cached.mtimeMs === stub.stat.mtimeMs &&
+    cached.summary &&
+    cached.summary.harness === stub.harness
+  ) {
+    return cached.summary;
+  }
+  let summary;
+  if (stub.harness === 'claude') summary = await summarizeClaudeFile(stub.path, stub.stat);
+  else if (stub.harness === 'codex') summary = await summarizeCodexFile(stub.path, stub.stat);
+  else summary = await summarizeAgyFile(stub.path, stub.stat);
+
+  if (cacheObj && summary) {
+    cacheObj[stub.path] = { size: stub.stat.size, mtimeMs: stub.stat.mtimeMs, summary };
+  }
+  return summary;
 }
 
 async function listSessions(opts = {}) {
@@ -859,10 +905,21 @@ async function listSessions(opts = {}) {
 
   const hydratedCache = [];
   const activeProjNeedle = explicitProject || cwdBase;
+  const cachePath = resolveCachePath(opts);
+  const diskCache = await loadSessionCache(cachePath);
+  const prevSize = Object.keys(diskCache).length;
+  let cacheDirty = false;
 
   for (const stub of stubs) {
-    const s = await hydrateStub(stub);
+    const before = diskCache[stub.path];
+    const s = await hydrateStub(stub, diskCache);
+    if (!before || before.size !== stub.stat.size || before.mtimeMs !== stub.stat.mtimeMs) {
+      cacheDirty = true;
+    }
     hydratedCache.push(s);
+  }
+  if (cacheDirty || Object.keys(diskCache).length !== prevSize) {
+    await saveSessionCache(cachePath, diskCache);
   }
 
   const sortList = (arr) => {
@@ -2666,8 +2723,96 @@ function formatStatMarkdown(parsed) {
   return lines.join('\n');
 }
 
+
+function compileSearchMatcher(query) {
+  const q = String(query || '').trim();
+  if (!q) throw new Error('search query is required');
+  const reMatch = /^\/(.+)\/([gimsuy]*)$/.exec(q);
+  if (reMatch) {
+    const flags = reMatch[2].replace(/g/g, '');
+    const re = new RegExp(reMatch[1], flags || 'i');
+    return text => re.test(text);
+  }
+  const needle = q.toLowerCase();
+  return text => text.toLowerCase().includes(needle);
+}
+
+async function searchSessions(query, opts = {}) {
+  const matches = compileSearchMatcher(query);
+  const limit = Number(opts.limit) > 0 ? Number(opts.limit) : 20;
+  const sessions = await listSessions({
+    ...opts,
+    query: null,
+    limit: 50,
+  });
+
+  const hits = [];
+  for (const s of sessions) {
+    if (hits.length >= limit) break;
+    const raw = await fs.read(s.path, { throw: false });
+    if (!raw || !matches(raw)) continue;
+
+    let parsed;
+    try {
+      parsed = await parseSession(s, opts);
+    } catch (_) {
+      continue;
+    }
+
+    for (const t of parsed.turns) {
+      if (hits.length >= limit) break;
+      if (t.kind === 'user' && t.text && matches(t.text)) {
+        hits.push({
+          id: parsed.meta.id,
+          shortId: parsed.meta.shortId,
+          harness: parsed.meta.harness,
+          project: parsed.meta.project,
+          turnNum: t.turnNum,
+          step: t.step,
+          kind: 'user',
+          snippet: oneLine(t.text, 120),
+        });
+      } else if (t.kind === 'assistant') {
+        for (const txt of t.texts || []) {
+          if (hits.length >= limit) break;
+          if (txt.text && matches(txt.text)) {
+            hits.push({
+              id: parsed.meta.id,
+              shortId: parsed.meta.shortId,
+              harness: parsed.meta.harness,
+              project: parsed.meta.project,
+              turnNum: t.turnNum,
+              step: txt.step,
+              kind: 'assistant',
+              snippet: oneLine(txt.text, 120),
+            });
+          }
+        }
+        for (const tc of t.tools || []) {
+          if (hits.length >= limit) break;
+          const hay = `${tc.rawName} ${tc.target || ''} ${tc.output || ''}`;
+          if (matches(hay)) {
+            hits.push({
+              id: parsed.meta.id,
+              shortId: parsed.meta.shortId,
+              harness: parsed.meta.harness,
+              project: parsed.meta.project,
+              turnNum: t.turnNum,
+              step: tc.step,
+              kind: `tool:${tc.name}`,
+              snippet: oneLine(`${tc.name}(${tc.target || ''})`, 120),
+            });
+          }
+        }
+      }
+    }
+  }
+  return hits;
+}
+
 export {
   listSessions,
+  searchSessions,
   resolveSession,
   parseSession,
   formatDigestMarkdown,

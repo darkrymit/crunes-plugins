@@ -24,6 +24,7 @@ const {
   normalizeFormat,
   parseSession,
   parseStepRangeSpec,
+  searchSessions,
 } = await import('../src/session.js')
 
 
@@ -286,6 +287,11 @@ describe('session.js (unit + fixture)', () => {
 
       const inspectMd = await formatInspectMarkdown(parsed, '0..2', { format: 'extended' })
       assert.match(inspectMd, /1 test failed/)
+
+      const hits = await searchSessions('failing tests', { homeDir: tmp, all: true, harness: 'codex' })
+      assert.equal(hits.length, 1)
+      assert.equal(hits[0].shortId, '33333333')
+      assert.equal(hits[0].kind, 'user')
     } finally {
       await env.cleanup()
       fs.rmSync(tmp, { recursive: true, force: true })
