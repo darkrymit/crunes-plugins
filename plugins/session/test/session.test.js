@@ -4,6 +4,8 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { zstdCompressSync } from 'node:zlib'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -60,6 +62,30 @@ function makeAgyFixture(tmp, app = 'antigravity', convId = '11111111-2222-3333-4
   fs.writeFileSync(path.join(logsDir, 'transcript.jsonl'), lines.join('\n') + '\n', 'utf8')
   return convId
 }
+
+const protoVarint = n => { const out = []; while (n > 127) { out.push((n % 128) | 128); n = Math.floor(n / 128) } return Buffer.from([...out, n]) }
+const proto = fields => Buffer.concat(fields.map(([n, v]) => typeof v === 'number'
+  ? Buffer.concat([protoVarint(n * 8), protoVarint(v)])
+  : Buffer.concat([protoVarint(n * 8 + 2), protoVarint(Buffer.from(v).length), Buffer.from(v)])))
+
+// Three responses; the second repeats as its own retry, the last one is written twice.
+function makeAgyDatabase(tmp, app, convId) {
+  const dir = path.join(tmp, '.gemini', app, 'conversations')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `${convId}.db`)
+  const db = new DatabaseSync(file)
+  db.exec('PRAGMA journal_mode = DELETE; CREATE TABLE gen_metadata (idx INTEGER, data BLOB, size INTEGER)')
+  const usage = (id, input, cached) => proto([[2, input], [3, 50], [5, cached], [9, 10], [10, 40], [11, id]])
+  const row = (u, retry) => proto([[1, proto([[4, u], ...(retry ? [[17, proto([[2, retry]])]] : [])])]])
+  const a = usage('r1', 1000, 70000), b = usage('r2', 200, 0), c = usage('r3', 5, 0)
+  const insert = db.prepare('INSERT INTO gen_metadata VALUES (?, ?, 0)')
+  ;[row(a), row(b, b), row(c), row(c), Buffer.from([255])].forEach((data, i) => insert.run(i, data))
+  for (let i = 5; i < 45; i++) insert.run(i, row(usage(`p${i}`, 1, 0)))
+  db.close()
+  return file
+}
+// 1000+200+5+40 input, 70000 cached, 43 responses of 50 output
+const AGY_DB_TOTAL = 1245 + 70000 + 43 * 50
 
 function runCrunes(cwd, args, env) {
   const useLocal = fs.existsSync(localCrunesCli)
@@ -340,6 +366,97 @@ describe('session.js (Antigravity folders)', () => {
   })
 })
 
+describe('session.js (token sources and compressed files)', () => {
+  it('takes Antigravity tokens from the database only when the transcript has none', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-agydb-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    try {
+      const bare = makeAgyFixture(tmp, 'antigravity-ide', 'aaaaaaaa-2222-3333-4444-555555555555')
+      makeAgyDatabase(tmp, 'antigravity-ide', bare)
+      const counted = makeAgyFixture(tmp, 'antigravity', 'bbbbbbbb-2222-3333-4444-555555555555')
+      makeAgyDatabase(tmp, 'antigravity', counted)
+      fs.appendFileSync(path.join(tmp, '.gemini/antigravity/brain', counted, '.system_generated/logs/transcript.jsonl'), JSON.stringify({ step_index: 3, type: 'PLANNER_RESPONSE', created_at: '2026-11-22T10:01:00Z', input_tokens: 7, output_tokens: 1, content: 'x' }) + '\n')
+      const noDb = makeAgyFixture(tmp, 'antigravity-cli', 'cccccccc-2222-3333-4444-555555555555')
+      const list = await listSessions({ homeDir: tmp, all: true, noCache: true })
+      const total = id => list.find(s => s.id === id).usage.total
+      assert.deepEqual([total(bare), total(counted), total(noDb)], [AGY_DB_TOTAL, 8, 0])
+      assert.equal(fs.existsSync(path.join(tmp, '.gemini/antigravity-cli/conversations')), false)
+      const parsed = await parseSession('aaaaaaaa', { homeDir: tmp })
+      assert.equal(parsed.meta.usage.total, AGY_DB_TOTAL)
+      assert.match(formatStatMarkdown(parsed), /43 turns/)
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('counts a Codex session by its own records, in list and stat alike', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-fork-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const C = '20000000-0000-4000-8000-000000000000', PARENT = '10000000-0000-4000-8000-000000000000'
+    const at = i => `2026-11-24T10:00:${String(i).padStart(2, '0')}Z`
+    const meta = from => ({ timestamp: at(0), type: 'session_meta', payload: { id: C, cwd: '/w/d', ...(from && { forked_from_id: from }) } })
+    const rec = (i, thread, n, id = `r${i}`) => ({ timestamp: at(i), type: 'token_usage_record', payload: { thread_id: thread, response_id: id, usage: { input_tokens: n }, turn_token_usage: { input_tokens: 99999 } } })
+    const tok = (i, last, total) => ({ timestamp: at(i), type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: last, total_tokens: last }, total_token_usage: { input_tokens: total, total_tokens: total } } } })
+    const both = (i, thread, n, total) => [rec(i, thread, n), tok(i, n, total)]
+    const cases = {
+      'fork with copied parent history': [[meta(PARENT), ...both(1, PARENT, 100, 100), ...both(2, PARENT, 200, 300), ...both(3, C, 400, 700), ...both(4, C, 500, 1200)], 900],
+      'fork with records only': [[meta(PARENT), rec(1, PARENT, 300), rec(3, C, 400), rec(4, C, 500)], 900],
+      'copied history without a fork marker': [[meta(), ...both(1, PARENT, 300, 300), ...both(3, C, 900, 1200)], 900],
+      'running total that lost usage': [[meta(), ...both(1, C, 400, 400), ...both(2, C, 500, 500)], 900],
+      'a response recorded twice': [[meta(), rec(1, C, 400, 'same'), rec(2, C, 400, 'same'), rec(3, C, 500)], 900],
+      'older Codex wrote the first part': [[meta(), tok(1, 400, 400), ...both(2, C, 500, 900)], 900],
+      'no records at all': [[meta(), tok(1, 400, 400), tok(2, 500, 900)], 900],
+    }
+    try {
+      const file = path.join(tmp, '.codex', 'sessions', `rollout-${C}.jsonl`)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      for (const [name, [rows, want]] of Object.entries(cases)) {
+        fs.writeFileSync(file, rows.map(o => JSON.stringify(o)).join('\n') + '\n')
+        const [s] = await listSessions({ homeDir: tmp, all: true, subagents: true, noCache: true })
+        assert.equal(s.usage.total, want, `list: ${name}`)
+        assert.equal((await parseSession(s)).meta.usage.total, want, `stat: ${name}`)
+      }
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('lists, reads and searches compressed Codex sessions, preferring the plain copy', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-zst-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const rows = n => [
+      { timestamp: '2026-11-24T10:00:00Z', type: 'session_meta', payload: { cwd: '/w/demo' } },
+      { timestamp: '2026-11-24T10:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: `Запит ${n}` } },
+      ...Array.from({ length: 200 }, () => ({ type: 'x', payload: {} })),
+      { timestamp: '2026-11-24T10:00:02Z', type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 5 } } } },
+      ...Array.from({ length: 10 }, () => ({ type: 'x', payload: {} })),
+    ].map(o => JSON.stringify(o)).join('\n')
+    const at = (dir, n, ext) => path.join(tmp, '.codex', dir, `rollout-${n}0000000-0000-4000-8000-000000000000.jsonl${ext}`)
+    try {
+      for (const d of ['sessions', 'archived_sessions']) fs.mkdirSync(path.join(tmp, '.codex', d), { recursive: true })
+      fs.writeFileSync(at('sessions', 1, ''), rows(1))
+      fs.writeFileSync(at('sessions', 1, '.zst'), zstdCompressSync(Buffer.from(rows(1))))
+      fs.writeFileSync(at('archived_sessions', 2, '.zst'), zstdCompressSync(Buffer.from(rows(2))))
+      fs.writeFileSync(at('archived_sessions', 3, '.zst'), 'not zstd')
+      const skipped = []
+      const opts = { homeDir: tmp, all: true, cacheFile: path.join(tmp, 'cache.json') }
+      const list = await listSessions({ ...opts, onSkip: s => skipped.push(s.id.slice(0, 1)) })
+      assert.deepEqual(list.map(s => [s.shortId, s.path.endsWith('.zst')]).sort(), [['10000000', false], ['20000000', true]])
+      assert.deepEqual(skipped, ['3'])
+      const z = list.find(s => s.shortId === '20000000')
+      assert.deepEqual([z.firstPrompt, z.usage.total, z.endedAt], ['Запит 2', 5, '2026-11-24T10:00:02Z'])
+      assert.match(formatDigestMarkdown(await parseSession('20000000', opts)), /Запит 2/)
+      assert.deepEqual((await searchSessions('Запит 2', opts)).map(h => h.shortId), ['20000000'])
+      assert.equal((await resolveSession(z.path, opts)).harness, 'codex')
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('session.js (large and broken transcripts)', () => {
   const writeCodex = (tmp, n, lines) => {
     const dir = path.join(tmp, '.codex', 'sessions')
@@ -609,6 +726,37 @@ describe('session.js (large and broken transcripts)', () => {
 })
 
 describe('session.rune.js (E2E isolate)', () => {
+  it('reads Antigravity databases and compressed Codex files with only their own grants, leaving the databases unchanged', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-foreign-'))
+    try {
+      const manifest = JSON.parse(fs.readFileSync(path.join(srcDir, '../.crunes-plugin/plugin.json'), 'utf8'))
+      const apps = { antigravity: 'aaaaaaaa', 'antigravity-cli': 'cccccccc', 'antigravity-ide': 'bbbbbbbb' }
+      const dbs = Object.entries(apps).map(([app, id]) => makeAgyDatabase(tmp, app, makeAgyFixture(tmp, app, `${id}-2222-3333-4444-555555555555`)))
+      const before = dbs.map(f => fs.readFileSync(f).toString('base64'))
+      for (const [dir, id] of [['sessions', '10000000'], ['archived_sessions', '20000000']]) {
+        fs.mkdirSync(path.join(tmp, '.codex', dir), { recursive: true })
+        fs.writeFileSync(path.join(tmp, '.codex', dir, `rollout-${id}-0000-4000-8000-000000000000.jsonl.zst`), zstdCompressSync(Buffer.from(JSON.stringify({ timestamp: '2026-11-24T10:00:00Z', type: 'event_msg', payload: { type: 'user_message', message: `ask ${id}` } }) + '\n')))
+      }
+      const allow = manifest.runes.session.run.permissions.allow.filter(p => p.includes('~/.codex/') || p.includes('.gemini/antigravity'))
+      fs.mkdirSync(path.join(tmp, '.crunes', 'runes'), { recursive: true })
+      fs.cpSync(srcDir, path.join(tmp, '.crunes', 'runes', 'session'), { recursive: true })
+      fs.writeFileSync(path.join(tmp, '.crunes', 'config.json'), JSON.stringify({
+        runes: { session: { run: { command: '.crunes/runes/session/index.rune.js', permissions: { allow: [...allow, 'fs.read:./.crunes/runes/session/**', ...Object.values(apps).map(id => `fs.read:${id}`)] } } } },
+      }))
+      const env = { ...process.env, HOME: tmp, USERPROFILE: tmp }
+      const agy = runCrunes(tmp, ['-p', 'run', 'session', 'list', '--all', '--harness', 'agy'], env)
+      assert.equal(agy.match(/73\.4k\//g)?.length, 3)
+      for (const id of Object.values(apps)) assert.match(runCrunes(tmp, ['-p', 'run', 'session', 'stat', id, '--harness', 'agy'], env), /73\.4k\//)
+      const codex = runCrunes(tmp, ['-p', 'run', 'session', 'list', '--all', '--harness', 'codex'], env)
+      assert.match(codex, /ask 10000000/)
+      assert.match(codex, /ask 20000000/)
+      assert.deepEqual(dbs.map(f => fs.readFileSync(f).toString('base64')), before)
+      assert.deepEqual(fs.readdirSync(path.dirname(dbs[0])), [path.basename(dbs[0])])
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   it('reads both Codex folders with only the grants plugin.json declares for them', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-codexgrants-'))
     try {

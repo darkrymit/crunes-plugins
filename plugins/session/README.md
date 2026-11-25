@@ -18,4 +18,6 @@ crunes -p run session inspect <id> 1..4
 
 - **`fs.glob`:** `~/.claude/projects::**/*.jsonl`, `~/.gemini/antigravity{,-cli,-ide}/brain::**/transcript.jsonl` (one grant each), `~/.codex/sessions::**/*.jsonl`, `~/.codex/archived_sessions::**/*.jsonl`
 - **`fs.read`:** `~/.claude/projects/**`, `~/.gemini/antigravity{,-cli,-ide}/brain/**` (one grant each), `~/.codex/sessions/**`, `~/.codex/archived_sessions/**`, `~/.crunes/cache/**`, `**`
+- **`sqlite.read`:** `~/.gemini/antigravity{,-cli,-ide}/conversations` (token counts some Antigravity apps keep only there; opened read-only, needs `better-sqlite3`), plus `fs.read` on the same folders
+- **Compressed Codex transcripts:** `**/*.jsonl.zst` in both Codex folders
 - **`fs.write`:** `~/.crunes/cache/**`

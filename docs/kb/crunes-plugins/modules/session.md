@@ -24,6 +24,14 @@ Transcripts can outgrow the sandbox memory limit, so summaries never hold a larg
 
 `digest`, `stat`, `inspect` and `search` stream too. Each tool output is applied to its call as it arrives (status, exit code, error, answer), then a keep rule drops whatever the command does not print: a digest keeps at most the excerpt it shows, `inspect` keeps the requested steps, `search` matches on arrival. A call whose result has already gone by (a repeated row) triggers a second pass over the results. Conversation text is always kept, so memory still grows with the dialogue and with the longest line.
 
+## Token counts
+
+**Codex** running totals include history a fork copied from its parent, and can miss usage around compaction. Newer files carry `token_usage_record` rows naming their thread, so a session counts its own rows, each response once. The running total is used when those rows are absent, or cover less in a session that is not a fork. A fork written by an older Codex still counts its parent's history.
+
+**Antigravity** transcripts sometimes hold no token counts. Only then are they read from `conversations/<id>.db`, whose rows are protobuf without a published schema; the field numbers were checked against transcripts that do hold counts.
+
+Summaries carry a cache version. Raise it whenever a summary is computed differently.
+
 ## Permissions
 
 Declares `fs.glob` (`~/.claude/projects::**/*.jsonl`, `~/.gemini/antigravity{,-cli,-ide}/brain::**/transcript.jsonl`, one grant each) and `fs.read` (`~/.claude/projects/**`, `~/.gemini/antigravity{,-cli,-ide}/brain/**`, one grant each, `**`).

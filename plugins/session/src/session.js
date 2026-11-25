@@ -1,4 +1,4 @@
-import { fs } from '@utils';
+import { fs, sqlite } from '@utils';
 
 // fs.stat returns its dates as ISO strings and has no millisecond fields.
 async function safeStat(p) {
@@ -58,7 +58,14 @@ function defaultDirs(opts = {}) {
   };
 }
 
+const isCompressed = filePath => filePath.endsWith('.zst');
+
+function readLines(filePath, opts = {}) {
+  return fs.readLinesStream(filePath, isCompressed(filePath) ? { ...opts, decompress: 'zstd' } : opts);
+}
+
 const EDGE_LINES = 80;
+const MAX_TAIL_CHARS = 8 * 1024 * 1024;
 const SMALL_FILE_BYTES = 1024 * 1024;
 
 /**
@@ -75,6 +82,25 @@ async function scanTranscript(filePath, size, { head = EDGE_LINES, wanted, onHea
     if (o && typeof o === 'object') onRecord(o);
   };
 
+  if (isCompressed(filePath)) {
+    // It can only be read forwards, so the tail is collected on the way, bounded in size.
+    const tail = [];
+    let tailChars = 0;
+    let count = 0;
+    for await (const raw of readLines(filePath)) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (onHead && ++count <= head) onHead(line);
+      if (wanted.some(w => line.includes(w))) feedRecord(line);
+      tail.push(line);
+      tailChars += line.length;
+      while (tail.length > EDGE_LINES || (tailChars > MAX_TAIL_CHARS && tail.length > 1)) {
+        tailChars -= tail.shift().length;
+      }
+    }
+    tail.forEach(onTail);
+    return;
+  }
   if (size < SMALL_FILE_BYTES) {
     const lines = toLines(await fs.read(filePath));
     if (onHead) lines.slice(0, head).forEach(onHead);
@@ -86,7 +112,7 @@ async function scanTranscript(filePath, size, { head = EDGE_LINES, wanted, onHea
     return;
   }
   if (onHead) toLines(await fs.read(filePath, { from: 1, to: head })).forEach(onHead);
-  for await (const line of fs.readLinesStream(filePath, { contains: wanted })) feedRecord(line);
+  for await (const line of readLines(filePath, { contains: wanted })) feedRecord(line);
   for (let n = 1; ; n = Math.min(n * 2, EDGE_LINES)) {
     toLines(await fs.read(filePath, { from: -n })).forEach(onTail);
     if (n === EDGE_LINES || enough()) break;
@@ -557,6 +583,116 @@ async function summarizeClaudeFile(filePath, stat) {
   };
 }
 
+function readVarint(bytes, at) {
+  let value = 0;
+  let scale = 1;
+  for (let i = at; i < bytes.length; i++) {
+    value += (bytes[i] & 127) * scale;
+    if (bytes[i] < 128) return [value, i + 1];
+    scale *= 128;
+  }
+  throw new Error('truncated varint');
+}
+
+/** Top-level protobuf fields as [number, value]; nested messages stay bytes. */
+function readProtoFields(bytes) {
+  const fields = [];
+  let at = 0;
+  while (at < bytes.length) {
+    let tag;
+    [tag, at] = readVarint(bytes, at);
+    const number = Math.floor(tag / 8);
+    const wire = tag % 8;
+    if (wire === 0) {
+      let value;
+      [value, at] = readVarint(bytes, at);
+      fields.push([number, value]);
+    } else if (wire === 2) {
+      let length;
+      [length, at] = readVarint(bytes, at);
+      if (at + length > bytes.length) throw new Error('truncated field');
+      fields.push([number, bytes.subarray(at, at + length)]);
+      at += length;
+    } else if (wire === 1) at += 8;
+    else if (wire === 5) at += 4;
+    else throw new Error('unsupported wire type');
+  }
+  return fields;
+}
+
+const protoLast = (fields, number) => fields.findLast(([n]) => n === number)?.[1];
+const isBytes = v => v instanceof Uint8Array && v.length > 0;
+
+// Field numbers observed in Antigravity databases: generation.1 is the model call, its 4 the usage
+// and 17 its retries (each holding a usage in 2). In a usage: 2 input, 3 output, 4 cache write,
+// 5 cache read, 9 reasoning, 10 visible output, 11/12/7 response ids.
+function readAgyGeneration(data, rowKey, seen, acc) {
+  const call = protoLast(readProtoFields(data), 1);
+  if (!isBytes(call)) return 0;
+  const callFields = readProtoFields(call);
+  const usages = [protoLast(callFields, 4)];
+  for (const [n, retry] of callFields) {
+    if (n === 17 && isBytes(retry)) usages.push(protoLast(readProtoFields(retry), 2));
+  }
+  let counted = 0;
+  for (const raw of usages) {
+    if (!isBytes(raw)) continue;
+    const usage = readProtoFields(raw);
+    const idBytes = [11, 12, 7].map(n => protoLast(usage, n)).find(isBytes);
+    const id = idBytes ? Array.from(idBytes).join() : rowKey;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const num = (n) => {
+      const v = protoLast(usage, n);
+      return typeof v === 'number' ? v : 0;
+    };
+    addUsage(acc, {
+      input: num(2),
+      cacheCreate: num(4),
+      cacheRead: num(5),
+      output: Math.max(num(3), num(9) + num(10))
+    });
+    counted += 1;
+  }
+  return counted;
+}
+
+const AGY_PAGE_ROWS = 20;
+
+/**
+ * Some Antigravity apps leave token counts out of the transcript and keep them in the conversation
+ * database beside it. Returns null when there is no readable database.
+ */
+async function readAgyDatabaseUsage(transcriptPath) {
+  const brainFolder = path.dirname(path.dirname(path.dirname(transcriptPath)));
+  const dir = path.join(path.dirname(path.dirname(brainFolder)), 'conversations');
+  const file = `${path.basename(brainFolder)}.db`;
+  let db = null;
+  try {
+    if (!(await fs.exists(path.join(dir, file)))) return null;
+    db = await sqlite.open(dir, file);
+    const acc = emptyUsage();
+    const seen = new Set();
+    let turns = 0;
+    let after = -1;
+    for (;;) {
+      const rows = await db.query('SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx LIMIT ?', [after, AGY_PAGE_ROWS]);
+      for (const row of rows) {
+        after = row.idx;
+        try {
+          if (isBytes(row.data)) turns += readAgyGeneration(row.data, `row:${row.idx}`, seen, acc);
+        } catch (_) {}
+      }
+      if (rows.length < AGY_PAGE_ROWS) break;
+    }
+    return turns > 0 ? { usage: acc, turns } : null;
+  } catch (_) {
+    return null;
+  } finally {
+    if (db) await db.close();
+  }
+}
+
 async function summarizeAgyFile(filePath, stat) {
   const logsDir = path.dirname(filePath);
   const sysGenDir = path.dirname(logsDir);
@@ -648,6 +784,10 @@ async function summarizeAgyFile(filePath, stat) {
   });
   startedAt = headTs || firstTs || startedAt;
   endedAt = endedAt || lastTs;
+  if (finalizeUsage(usageAcc).total === 0) {
+    const stored = await readAgyDatabaseUsage(filePath);
+    if (stored) addUsage(usageAcc, stored.usage);
+  }
 
   const isSubagent = Boolean(step0Sender && !hasUserInput);
   const finalStarted = startedAt || stat.birthtime.toISOString();
@@ -681,7 +821,7 @@ async function summarizeAgyFile(filePath, stat) {
 
 
 function extractCodexIdFromPath(filePath) {
-  const base = path.basename(filePath, '.jsonl');
+  const base = path.basename(path.basename(filePath, '.zst'), '.jsonl');
   const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(base);
   return m ? m[1] : base;
 }
@@ -708,6 +848,22 @@ function extractCodexOutputText(output) {
   return '';
 }
 
+/** Picks the usage records a thread wrote itself, each response once. */
+function createCodexOwnUsage(threadId) {
+  const seen = new Set();
+  return {
+    threadId,
+    take(p) {
+      if (!p.usage || p.thread_id !== threadId) return null;
+      if (p.response_id) {
+        if (seen.has(p.response_id)) return null;
+        seen.add(p.response_id);
+      }
+      return codexUsageDelta(p.usage);
+    }
+  };
+}
+
 async function summarizeCodexFile(filePath, stat) {
   let id = extractCodexIdFromPath(filePath);
 
@@ -723,6 +879,9 @@ async function summarizeCodexFile(filePath, stat) {
   let agentPath = null;
   let lastTotalUsage = null;
   const turnUsageAcc = emptyUsage();
+  const own = createCodexOwnUsage(extractCodexIdFromPath(filePath));
+  const ownUsageAcc = emptyUsage();
+  let isFork = false;
 
   const inspectRecord = (o) => {
     if (!startedAt && o.timestamp) startedAt = o.timestamp;
@@ -731,6 +890,7 @@ async function summarizeCodexFile(filePath, stat) {
     if (!p || typeof p !== 'object') return;
 
     if (o.type === 'session_meta') {
+      if (p.forked_from_id && p.forked_from_id !== p.id) isFork = true;
       if (p.id) id = String(p.id);
       else if (p.session_id && !id) id = String(p.session_id);
       if (!cwd && p.cwd) cwd = p.cwd;
@@ -752,9 +912,12 @@ async function summarizeCodexFile(filePath, stat) {
       } else if (p.type === 'task_complete' && p.last_agent_message && !title && isSubagent) {
         title = `[${agentPath || 'subagent'}] ${oneLine(p.last_agent_message, 80)}`;
       }
-    } else if (o.type === 'token_usage_record' && p.turn_token_usage) {
-      const d = codexUsageDelta(p.turn_token_usage);
+    } else if (o.type === 'token_usage_record') {
+      const d = codexUsageDelta(p.usage || p.turn_token_usage);
       if (d) addUsage(turnUsageAcc, d);
+      const ownDelta = own.take(p);
+      if (ownDelta) addUsage(ownUsageAcc, ownDelta);
+      if (p.thread_id && p.thread_id !== own.threadId) isFork = true;
     }
   };
 
@@ -774,7 +937,12 @@ async function summarizeCodexFile(filePath, stat) {
     hasEnd: () => tailDated
   });
 
-  const usageAcc = lastTotalUsage ? (codexUsageDelta(lastTotalUsage) || emptyUsage()) : turnUsageAcc;
+  const runningTotal = lastTotalUsage ? (codexUsageDelta(lastTotalUsage) || emptyUsage()) : turnUsageAcc;
+  // A fork's running total includes history copied from its parent. Elsewhere the records win unless
+  // they cover less, as when an older Codex wrote the first part of the file.
+  const ownTotal = finalizeUsage(ownUsageAcc).total;
+  const usageFromRecords = ownTotal > 0 && (isFork || !lastTotalUsage || ownTotal >= finalizeUsage(runningTotal).total);
+  const usageAcc = usageFromRecords ? ownUsageAcc : runningTotal;
   const finalStarted = startedAt || stat.birthtime.toISOString();
   const finalEnded = endedAt || stat.mtime.toISOString();
   const durationMs = Math.max(0, toMs(finalEnded, stat.mtimeMs) - toMs(finalStarted, stat.birthtimeMs));
@@ -800,6 +968,7 @@ async function summarizeCodexFile(filePath, stat) {
     endedMs: toMs(finalEnded, stat.mtimeMs),
     durationMs,
     usage: finalizeUsage(usageAcc),
+    usageFromRecords,
     mtimeMs: stat.mtimeMs,
     size: stat.size,
     path: filePath
@@ -851,20 +1020,22 @@ async function discoverSessionStubs(opts = {}) {
     } catch (_) {}
   }
 
-  // Active sessions come first, so an archived copy of one is skipped.
-  const activeCodex = new Set();
-  for (const codexDir of !wantHarness || wantHarness === 'codex' ? codexDirs : []) {
+  // Active before archived and plain before compressed: a later copy of a listed session is skipped.
+  const seenCodex = new Set();
+  const codexSources = codexDirs.flatMap(dir => ['**/*.jsonl', '**/*.jsonl.zst'].map(pattern => [dir, pattern]));
+  for (const [codexDir, pattern] of !wantHarness || wantHarness === 'codex' ? codexSources : []) {
+    const listed = new Set(seenCodex);
     try {
       if (!(await fs.exists(codexDir))) continue;
-      const files = await fs.glob('**/*.jsonl', { cwd: codexDir, dot: true });
+      const files = await fs.glob(pattern, { cwd: codexDir, dot: true });
       for (const rel of files) {
         const norm = rel.replace(/\\/g, '/');
         const fullFile = path.join(codexDir, norm);
         const st = await safeStat(fullFile);
         if (!st || !st.isFile || st.size <= 0) continue;
         const id = extractCodexIdFromPath(fullFile);
-        if (codexDir === codexDirs[0]) activeCodex.add(id);
-        else if (activeCodex.has(id)) continue;
+        if (listed.has(id)) continue;
+        seenCodex.add(id);
         stubs.push({ id, harness: 'codex', path: fullFile, stat: st, mtimeMs: st.mtimeMs });
       }
     } catch (_) {}
@@ -903,10 +1074,14 @@ async function saveSessionCache(cachePath, cacheObj) {
   } catch (_) {}
 }
 
+// Raise when a summary is computed differently, so cached ones are rebuilt.
+const CACHE_VERSION = 2;
+
 async function hydrateStub(stub, cacheObj = null) {
   const cached = cacheObj && cacheObj[stub.path];
   if (
     cached &&
+    cached.v === CACHE_VERSION &&
     cached.size === stub.stat.size &&
     cached.mtimeMs === stub.stat.mtimeMs &&
     cached.summary &&
@@ -920,7 +1095,7 @@ async function hydrateStub(stub, cacheObj = null) {
   else summary = await summarizeAgyFile(stub.path, stub.stat);
 
   if (cacheObj && summary) {
-    cacheObj[stub.path] = { size: stub.stat.size, mtimeMs: stub.stat.mtimeMs, summary };
+    cacheObj[stub.path] = { v: CACHE_VERSION, size: stub.stat.size, mtimeMs: stub.stat.mtimeMs, summary };
   }
   return summary;
 }
@@ -984,7 +1159,7 @@ async function listSessions(opts = {}) {
       if (opts.onSkip) opts.onSkip(stub, err);
       continue;
     }
-    if (!before || before.size !== stub.stat.size || before.mtimeMs !== stub.stat.mtimeMs) {
+    if (!before || before.v !== CACHE_VERSION || before.size !== stub.stat.size || before.mtimeMs !== stub.stat.mtimeMs) {
       cacheDirty = true;
       unsaved += 1;
       // A first scan can be long; saving along the way lets an interrupted one resume.
@@ -1026,7 +1201,7 @@ async function resolveSession(idOrLatest, opts = {}) {
     const st = await safeStat(idOrLatest);
     if (st && st.isFile) {
       let firstLine = '{}';
-      for await (const line of fs.readLinesStream(idOrLatest)) {
+      for await (const line of readLines(idOrLatest)) {
         firstLine = line || '{}';
         break;
       }
@@ -1157,7 +1332,7 @@ function applyResultToToolCall(tc, rawOutput, isErrorStatus) {
 }
 
 async function* readRecords(filePath) {
-  for await (const raw of fs.readLinesStream(filePath)) {
+  for await (const raw of readLines(filePath)) {
     const line = raw.trim();
     if (!line) continue;
     let o;
@@ -1504,6 +1679,14 @@ async function parseAntigravityTranscript(sessionSummary, keep) {
   }
   closeOpen();
   ledger.finish();
+  if (finalizeUsage(meta.usage).total === 0) {
+    const stored = await readAgyDatabaseUsage(sessionSummary.path);
+    if (stored) {
+      const name = meta.models[meta.models.length - 1] || 'antigravity';
+      meta.usage = { ...stored.usage };
+      meta.modelUsage = { [name]: { ...stored.usage, turns: stored.turns } };
+    }
+  }
 
   return finalizeParsedSession(meta, steps, sessionSummary);
 }
@@ -2075,9 +2258,10 @@ async function parseCodexTranscript(sessionSummary, keep) {
   const steps = [];
   let stepCounter = 0;
   let lastTotalTokensSeen = 0;
+  const own = sessionSummary.usageFromRecords ? createCodexOwnUsage(extractCodexIdFromPath(sessionSummary.path)) : null;
   let lastCompactionTs = 0;
 
-  const attachUsageToLatestAssistant = (delta, ts) => {
+  const attachUsageToLatestAssistant = (delta, ts, endsTurn = true) => {
     addUsage(meta.usage, delta);
     const stepUsage = finalizeUsage(delta);
     const mName = meta.models[meta.models.length - 1] || 'codex';
@@ -2090,7 +2274,7 @@ async function parseCodexTranscript(sessionSummary, keep) {
       const merged = { ...lastAssistant.usage };
       addUsage(merged, delta);
       lastAssistant.usage = finalizeUsage(merged);
-      if (ts) lastAssistant.endTimestamp = ts;
+      if (ts && endsTurn) lastAssistant.endTimestamp = ts;
     } else {
       steps.push({
         index: stepCounter++,
@@ -2121,6 +2305,13 @@ async function parseCodexTranscript(sessionSummary, keep) {
         meta.isSubagent = true;
         meta.parentId = p.parent_thread_id || p.source?.subagent?.thread_spawn?.parent_thread_id || meta.parentId;
       }
+      continue;
+    }
+
+    if (e.type === 'token_usage_record') {
+      const delta = own && own.take(p);
+      // Tokens only: a compaction's record would stretch the turn before it.
+      if (delta) attachUsageToLatestAssistant(delta, ts, false);
       continue;
     }
 
@@ -2174,7 +2365,10 @@ async function parseCodexTranscript(sessionSummary, keep) {
         if (tot > lastTotalTokensSeen && p.info.last_token_usage) {
           lastTotalTokensSeen = tot;
           const delta = codexUsageDelta(p.info.last_token_usage);
-          if (delta) attachUsageToLatestAssistant(delta, ts);
+          if (own) {
+            const lastAssistant = steps.findLast(s => s.kind === 'assistant');
+            if (lastAssistant && ts) lastAssistant.endTimestamp = ts;
+          } else if (delta) attachUsageToLatestAssistant(delta, ts);
         }
       } else if (p.type === 'patch_apply_end' && p.success && p.changes && typeof p.changes === 'object') {
         const refStep = Math.max(0, stepCounter - 1);
@@ -2932,7 +3126,7 @@ async function searchSessions(query, opts = {}) {
     let parsed;
     try {
       let mayMatch = false;
-      for await (const line of fs.readLinesStream(s.path)) {
+      for await (const line of readLines(s.path)) {
         if (matches(line)) {
           mayMatch = true;
           break;
