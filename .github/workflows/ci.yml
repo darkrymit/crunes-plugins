@@ -17,6 +17,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - run: npm install -g @darkrymit/crunes-cli@0.10.2
-      - run: crunes -p run check
+          node-version: 24
+      - run: npm install --prefix . --no-save --no-package-lock @darkrymit/crunes-cli@0.13.0
+      - run: node node_modules/@darkrymit/crunes-cli/dist/cli.js -p run check
