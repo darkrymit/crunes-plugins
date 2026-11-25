@@ -373,6 +373,66 @@ describe('session.js (large and broken transcripts)', () => {
     }
   })
 
+  it('takes the end time past a run of undated last lines, and lists a file whose last lines are huge', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-tail-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const realRead = env.utils.fs.read
+    const ranges = []
+    env.utils.fs.read = (p, o) => { if (o && o.from < 0) ranges.push(o.from); return realRead(p, o) }
+    const dated = i => JSON.stringify({ timestamp: `2026-11-24T11:00:${String(i % 60).padStart(2, '0')}Z`, type: 'x', payload: { pad: 'я'.repeat(20_000) } })
+    const undated = JSON.stringify({ type: 'x', payload: {} })
+    try {
+      writeCodex(tmp, 1, [...small, dated(7), ...Array(90).fill(undated)])
+      const large = writeCodex(tmp, 2, [...small, ...Array(60).fill(dated(1)), dated(9), ...Array(5).fill(undated)])
+      assert.ok(fs.statSync(large).size > 1024 * 1024)
+      const list = await listSessions({ homeDir: tmp, all: true, noCache: true, harness: 'codex' })
+      const end = n => list.find(s => s.path.endsWith(`${n}.jsonl`)).endedAt
+      assert.equal(end(1), '2026-11-24T11:00:07Z')
+      assert.equal(end(2), '2026-11-24T11:00:09Z')
+      assert.deepEqual(ranges, [-1, -2, -4, -8])
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('finds a Claude title written late in a large transcript', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-title-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    try {
+      const dir = path.join(tmp, '.claude', 'projects', 'c--w-demo')
+      fs.mkdirSync(dir, { recursive: true })
+      const row = i => ({ type: 'user', timestamp: '2026-11-24T10:00:00Z', message: { content: i === 0 ? 'Запит' : [{ type: 'tool_result', tool_use_id: 't', content: 'вивід'.repeat(600) }] } })
+      const rows = [...Array.from({ length: 300 }, (_, i) => row(i)), { type: 'ai-title', aiTitle: 'Пізня назва' }, ...Array.from({ length: 50 }, (_, i) => row(i + 1))]
+      fs.writeFileSync(path.join(dir, 'aaaaaaaa-1111-1111-1111-111111111111.jsonl'), rows.map(o => JSON.stringify(o)).join('\n') + '\n')
+      const [s] = await listSessions({ homeDir: tmp, all: true, noCache: true, harness: 'claude' })
+      assert.deepEqual([s.title, s.firstPrompt], ['Пізня назва', 'Запит'])
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('lists archived Codex sessions, preferring the active copy', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-archived-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const opts = { homeDir: tmp, all: true, noCache: true }
+    try {
+      const active = writeCodex(tmp, 1, small)
+      const archive = path.join(tmp, '.codex', 'archived_sessions')
+      fs.mkdirSync(archive)
+      fs.copyFileSync(active, path.join(archive, path.basename(active)))
+      fs.copyFileSync(active, path.join(archive, path.basename(active).replace('000000000001', '000000000002')))
+      const list = await listSessions({ ...opts, harness: 'codex' })
+      assert.deepEqual(list.map(s => [s.path.includes('archived_sessions'), s.path.slice(-7, -6)]).sort(), [[false, '1'], [true, '2']])
+      fs.rmSync(path.join(tmp, '.codex', 'sessions'), { recursive: true })
+      assert.equal((await listSessions(opts)).length, 2)
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   // Transcripts under 1 MB are read once, larger ones by parts; both must agree.
   for (const [label, pad] of [['small', 1], ['large', 600]]) it(`counts records from the middle of a ${label} transcript and takes the end time from its tail`, async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-middle-'))
@@ -549,6 +609,32 @@ describe('session.js (large and broken transcripts)', () => {
 })
 
 describe('session.rune.js (E2E isolate)', () => {
+  it('reads both Codex folders with only the grants plugin.json declares for them', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-codexgrants-'))
+    try {
+      const manifest = JSON.parse(fs.readFileSync(path.join(srcDir, '../.crunes-plugin/plugin.json'), 'utf8'))
+      const ids = { sessions: '10000000', archived_sessions: '20000000' }
+      for (const [dir, id] of Object.entries(ids)) {
+        fs.mkdirSync(path.join(tmp, '.codex', dir), { recursive: true })
+        fs.writeFileSync(path.join(tmp, '.codex', dir, `rollout-${id}-0000-4000-8000-000000000000.jsonl`), JSON.stringify({ timestamp: '2026-11-24T10:00:00Z', type: 'event_msg', payload: { type: 'user_message', message: `ask ${id}` } }) + '\n')
+      }
+      const allow = manifest.runes.session.run.permissions.allow.filter(p => p.includes('~/.codex/'))
+      fs.mkdirSync(path.join(tmp, '.crunes', 'runes'), { recursive: true })
+      fs.cpSync(srcDir, path.join(tmp, '.crunes', 'runes', 'session'), { recursive: true })
+      fs.writeFileSync(path.join(tmp, '.crunes', 'config.json'), JSON.stringify({
+        runes: { session: { run: { command: '.crunes/runes/session/index.rune.js', permissions: { allow: [...allow, 'fs.read:./.crunes/runes/session/**', ...Object.values(ids).map(id => `fs.read:${id}`)] } } } },
+      }))
+      const env = { ...process.env, HOME: tmp, USERPROFILE: tmp }
+      const listOut = runCrunes(tmp, ['-p', 'run', 'session', 'list', '--all', '--harness', 'codex'], env)
+      for (const id of Object.values(ids)) {
+        assert.match(listOut, new RegExp(`ask ${id}`))
+        assert.match(runCrunes(tmp, ['-p', 'run', 'session', 'digest', id, '--harness', 'codex'], env), new RegExp(`ask ${id}`))
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   it('reads every Antigravity folder with only the grants plugin.json declares for it', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-grants-'))
     try {

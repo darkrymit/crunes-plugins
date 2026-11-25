@@ -18,6 +18,8 @@
             "fs.read:~/.gemini/antigravity-ide/brain/**",
             "fs.glob:~/.codex/sessions::**/*.jsonl",
             "fs.read:~/.codex/sessions/**",
+            "fs.glob:~/.codex/archived_sessions::**/*.jsonl",
+            "fs.read:~/.codex/archived_sessions/**",
             "fs.read:~/.crunes/cache/**",
             "fs.write:~/.crunes/cache/**",
             "fs.read:**"

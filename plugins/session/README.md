@@ -1,6 +1,6 @@
 # Crunes Plugin: session
 
-Discover, search, inspect, and audit token usage for Claude Code (`~/.claude/projects/`), Antigravity desktop, CLI and IDE (`~/.gemini/antigravity{,-cli,-ide}/brain/`), and Codex (`~/.codex/sessions/`) session transcripts.
+Discover, search, inspect, and audit token usage for Claude Code (`~/.claude/projects/`), Antigravity desktop, CLI and IDE (`~/.gemini/antigravity{,-cli,-ide}/brain/`), and Codex (`~/.codex/sessions/`, `~/.codex/archived_sessions/`) session transcripts.
 
 ## Usage
 
@@ -16,6 +16,6 @@ crunes -p run session inspect <id> 1..4
 
 ## Permissions
 
-- **`fs.glob`:** `~/.claude/projects::**/*.jsonl`, `~/.gemini/antigravity{,-cli,-ide}/brain::**/transcript.jsonl` (one grant each), `~/.codex/sessions::**/*.jsonl`
-- **`fs.read`:** `~/.claude/projects/**`, `~/.gemini/antigravity{,-cli,-ide}/brain/**` (one grant each), `~/.codex/sessions/**`, `~/.crunes/cache/**`, `**`
+- **`fs.glob`:** `~/.claude/projects::**/*.jsonl`, `~/.gemini/antigravity{,-cli,-ide}/brain::**/transcript.jsonl` (one grant each), `~/.codex/sessions::**/*.jsonl`, `~/.codex/archived_sessions::**/*.jsonl`
+- **`fs.read`:** `~/.claude/projects/**`, `~/.gemini/antigravity{,-cli,-ide}/brain/**` (one grant each), `~/.codex/sessions/**`, `~/.codex/archived_sessions/**`, `~/.crunes/cache/**`, `**`
 - **`fs.write`:** `~/.crunes/cache/**`

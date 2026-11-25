@@ -54,7 +54,7 @@ function defaultDirs(opts = {}) {
   return {
     claudeDir: opts.claudeDir || path.join(home, '.claude', 'projects'),
     agyDirs: opts.agyDir ? [opts.agyDir] : AGY_APPS.map(app => path.join(home, '.gemini', app, 'brain')),
-    codexDir: opts.codexDir || path.join(home, '.codex', 'sessions')
+    codexDirs: opts.codexDir ? [opts.codexDir] : ['sessions', 'archived_sessions'].map(d => path.join(home, '.codex', d))
   };
 }
 
@@ -64,9 +64,10 @@ const SMALL_FILE_BYTES = 1024 * 1024;
 /**
  * Feeds a transcript in three parts: its first lines, the records holding one of `wanted` anywhere
  * in the file, and its last lines. A small file is read once; a large one is read by parts, so that
- * the other records, mostly tool output, stay on the host.
+ * the other records, mostly tool output, stay on the host. The tail of a large file grows line by
+ * line until `enough()`, because a few last records can be huge; lines fed again must be harmless.
  */
-async function scanTranscript(filePath, size, { head = EDGE_LINES, tail = EDGE_LINES, wanted, onHead, onRecord, onTail }) {
+async function scanTranscript(filePath, size, { head = EDGE_LINES, wanted, onHead, onRecord, onTail, hasEnd, enough = hasEnd }) {
   const toLines = raw => raw.split('\n').map(l => l.trim()).filter(Boolean);
   const feedRecord = (line) => {
     let o;
@@ -80,12 +81,16 @@ async function scanTranscript(filePath, size, { head = EDGE_LINES, tail = EDGE_L
     for (const line of lines) {
       if (wanted.some(w => line.includes(w))) feedRecord(line);
     }
-    lines.slice(-tail).forEach(onTail);
+    lines.slice(-EDGE_LINES).forEach(onTail);
+    for (let i = lines.length - EDGE_LINES - 1; i >= 0 && !hasEnd(); i--) onTail(lines[i]);
     return;
   }
   if (onHead) toLines(await fs.read(filePath, { from: 1, to: head })).forEach(onHead);
   for await (const line of fs.readLinesStream(filePath, { contains: wanted })) feedRecord(line);
-  toLines(await fs.read(filePath, { from: -tail })).forEach(onTail);
+  for (let n = 1; ; n = Math.min(n * 2, EDGE_LINES)) {
+    toLines(await fs.read(filePath, { from: -n })).forEach(onTail);
+    if (n === EDGE_LINES || enough()) break;
+  }
 }
 
 function cleanUserText(raw) {
@@ -481,10 +486,12 @@ async function summarizeClaudeFile(filePath, stat) {
   let firstTs = null;
   let lastTs = null;
   let firstCwd = null;
+  let lastTitle = null;
   const onRecord = (o) => {
     if (!firstTs && o.timestamp) firstTs = o.timestamp;
     if (o.timestamp) lastTs = o.timestamp;
     if (!firstCwd && o.cwd) firstCwd = o.cwd;
+    if (o.type === 'ai-title' && o.aiTitle) lastTitle = o.aiTitle;
     if (o.type === 'assistant' && o.message && o.message.usage) {
       const rid = o.requestId || '';
       const mid = o.message.id || '';
@@ -504,7 +511,7 @@ async function summarizeClaudeFile(filePath, stat) {
   };
   let headTs = null;
   await scanTranscript(filePath, stat.size, {
-    wanted: ['"usage"'],
+    wanted: ['"usage"', '"ai-title"'],
     onHead: l => inspectLine(l),
     onRecord,
     onTail: (l) => {
@@ -513,10 +520,13 @@ async function summarizeClaudeFile(filePath, stat) {
         endedAt = null;
       }
       inspectLine(l);
-    }
+    },
+    hasEnd: () => Boolean(endedAt),
+    enough: () => Boolean(endedAt && firstPrompt)
   });
   startedAt = headTs || firstTs || startedAt;
   endedAt = endedAt || lastTs;
+  if (lastTitle) title = lastTitle;
   if (!cwd) cwd = firstCwd;
 
   const finalStarted = startedAt || stat.birthtime.toISOString();
@@ -632,7 +642,9 @@ async function summarizeAgyFile(filePath, stat) {
         endedAt = null;
       }
       inspectLine(l);
-    }
+    },
+    hasEnd: () => Boolean(endedAt),
+    enough: () => Boolean(endedAt && firstPrompt)
   });
   startedAt = headTs || firstTs || startedAt;
   endedAt = endedAt || lastTs;
@@ -746,16 +758,20 @@ async function summarizeCodexFile(filePath, stat) {
     }
   };
 
+  let tailDated = false;
   await scanTranscript(filePath, stat.size, {
-    tail: 20,
     wanted: ['"session_meta"', '"turn_context"', '"user_message"', '"token_count"', '"task_complete"', '"token_usage_record"'],
     onRecord: inspectRecord,
     onTail: (l) => {
       try {
         const { timestamp } = JSON.parse(l);
-        if (timestamp) endedAt = timestamp;
+        if (timestamp && !(tailDated && toMs(timestamp, 0) < toMs(endedAt, 0))) {
+          endedAt = timestamp;
+          tailDated = true;
+        }
       } catch (_) {}
-    }
+    },
+    hasEnd: () => tailDated
   });
 
   const usageAcc = lastTotalUsage ? (codexUsageDelta(lastTotalUsage) || emptyUsage()) : turnUsageAcc;
@@ -791,7 +807,7 @@ async function summarizeCodexFile(filePath, stat) {
 }
 
 async function discoverSessionStubs(opts = {}) {
-    const { claudeDir, agyDirs, codexDir } = defaultDirs(opts);
+    const { claudeDir, agyDirs, codexDirs } = defaultDirs(opts);
   const wantHarness = opts.harness ? opts.harness.toLowerCase() : null;
   const includeSubagents = Boolean(opts.includeSubagents || opts.subagents);
   const stubs = [];
@@ -835,8 +851,11 @@ async function discoverSessionStubs(opts = {}) {
     } catch (_) {}
   }
 
-  if ((!wantHarness || wantHarness === 'codex') && (await fs.exists(codexDir))) {
+  // Active sessions come first, so an archived copy of one is skipped.
+  const activeCodex = new Set();
+  for (const codexDir of !wantHarness || wantHarness === 'codex' ? codexDirs : []) {
     try {
+      if (!(await fs.exists(codexDir))) continue;
       const files = await fs.glob('**/*.jsonl', { cwd: codexDir, dot: true });
       for (const rel of files) {
         const norm = rel.replace(/\\/g, '/');
@@ -844,6 +863,8 @@ async function discoverSessionStubs(opts = {}) {
         const st = await safeStat(fullFile);
         if (!st || !st.isFile || st.size <= 0) continue;
         const id = extractCodexIdFromPath(fullFile);
+        if (codexDir === codexDirs[0]) activeCodex.add(id);
+        else if (activeCodex.has(id)) continue;
         stubs.push({ id, harness: 'codex', path: fullFile, stat: st, mtimeMs: st.mtimeMs });
       }
     } catch (_) {}
