@@ -13,8 +13,9 @@ const localCrunesCli = path.resolve(__dirname, '../../../../crunes-cli/dist/cli.
 
 function runCrunes(cwd, args, input) {
   const useLocal = fs.existsSync(localCrunesCli)
-  const cmd = useLocal ? process.execPath : 'crunes'
-  const fullArgs = useLocal ? [localCrunesCli, ...args] : args
+  const cmd = process.execPath
+  const cli = useLocal ? localCrunesCli : fileURLToPath(import.meta.resolve('@darkrymit/crunes-cli'))
+  const fullArgs = [cli, ...args]
   return execFileSync(cmd, fullArgs, { cwd, input, encoding: 'utf8' })
 }
 
