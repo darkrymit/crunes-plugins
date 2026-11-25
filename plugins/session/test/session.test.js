@@ -357,9 +357,9 @@ describe('session.js (large and broken transcripts)', () => {
     const reads = []
     const env = setupCrunesTest({ cwd: tmp })
     const realRead = env.utils.fs.read
-    env.utils.fs.read = (p, o) => { reads.push(p); return realRead(p, o) }
+    env.utils.fs.read = (p, o) => { if (!o || (o.from == null && o.to == null)) reads.push(p); return realRead(p, o) }
     try {
-      const file = writeCodex(tmp, 1, [...small, ...Array(500).fill(JSON.stringify({ timestamp: '2026-11-24T11:00:00Z', type: 'x', payload: {} }))])
+      const file = writeCodex(tmp, 1, [...small, ...Array(500).fill(JSON.stringify({ timestamp: '2026-11-24T11:00:00Z', type: 'x', payload: { pad: 'x'.repeat(3000) } }))])
       const [s] = await listSessions({ homeDir: tmp, all: true, harness: 'codex', noCache: true })
       assert.equal(s.firstPrompt, 'Привіт')
       assert.equal(s.project, 'demo')
@@ -367,6 +367,37 @@ describe('session.js (large and broken transcripts)', () => {
       const byPath = await resolveSession(file, { homeDir: tmp })
       assert.equal(byPath.harness, 'codex')
       assert.deepEqual(reads, [])
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  // Transcripts under 1 MB are read once, larger ones by parts; both must agree.
+  for (const [label, pad] of [['small', 1], ['large', 600]]) it(`counts records from the middle of a ${label} transcript and takes the end time from its tail`, async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-middle-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const at = i => new Date(Date.UTC(2026, 10, 24, 10, 0, i)).toISOString()
+    const bulk = i => ({ timestamp: at(i), type: 'response_item', payload: { type: 'function_call_output', call_id: 'c', output: 'вивід "token_count"'.repeat(pad) } })
+    try {
+      const codex = Array.from({ length: 400 }, (_, i) => bulk(i))
+      codex[0] = { timestamp: at(0), type: 'session_meta', payload: { cwd: '/w/demo' } }
+      codex[150] = { timestamp: at(150), type: 'event_msg', payload: { type: 'user_message', message: 'Пізній запит' } }
+      codex[200] = { timestamp: at(200), type: 'turn_context', payload: { model: 'late-model' } }
+      codex[250] = { timestamp: at(250), type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 40, output_tokens: 2 } } } }
+      // One record written with spaces after its colons.
+      writeCodex(tmp, 1, codex.map((o, i) => i === 250 ? JSON.stringify(o, null, 1).replace(/\n\s*/g, ' ') : JSON.stringify(o)))
+      const [c] = await listSessions({ homeDir: tmp, all: true, noCache: true, harness: 'codex' })
+      assert.deepEqual([c.firstPrompt, c.model, c.usage.total, c.startedAt, c.endedAt], ['Пізній запит', 'late-model', 42, at(0), at(399)])
+
+      const dir = path.join(tmp, '.claude', 'projects', 'c--w-demo')
+      fs.mkdirSync(dir, { recursive: true })
+      const claude = Array.from({ length: 400 }, (_, i) => i === 200
+        ? { type: 'assistant', timestamp: at(i), cwd: '/w/demo', requestId: 'r', message: { id: 'm', usage: { input_tokens: 5, output_tokens: 1 }, content: [] } }
+        : { type: 'user', timestamp: at(i), message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'вивід'.repeat(pad) }] } })
+      fs.writeFileSync(path.join(dir, 'aaaaaaaa-1111-1111-1111-111111111111.jsonl'), claude.map(o => JSON.stringify(o)).join('\n') + '\n')
+      const [a] = await listSessions({ homeDir: tmp, all: true, noCache: true, harness: 'claude' })
+      assert.deepEqual([a.cwd, a.usage.total, a.startedAt, a.endedAt], ['/w/demo', 6, at(0), at(399)])
     } finally {
       await env.cleanup()
       fs.rmSync(tmp, { recursive: true, force: true })
@@ -410,10 +441,10 @@ describe('session.js (large and broken transcripts)', () => {
   it('reports an unreadable transcript and still lists the rest', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-skip-'))
     const env = setupCrunesTest({ cwd: tmp })
-    const realStream = env.utils.fs.readLinesStream
-    env.utils.fs.readLinesStream = (p, o) => {
+    const realRead = env.utils.fs.read
+    env.utils.fs.read = (p, o) => {
       if (p.endsWith('000000000001.jsonl')) throw new Error('unreadable')
-      return realStream(p, o)
+      return realRead(p, o)
     }
     try {
       writeCodex(tmp, 1, small)
@@ -493,13 +524,14 @@ describe('session.js (large and broken transcripts)', () => {
   it('keeps finished summaries when a long first scan is interrupted', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-resume-'))
     const env = setupCrunesTest({ cwd: tmp })
-    const realStream = env.utils.fs.readLinesStream
+    const realRead = env.utils.fs.read
     let scans = 0
     let failAfter = 120
-    env.utils.fs.readLinesStream = (p, o) => {
+    env.utils.fs.read = (p, o) => {
+      if (!p.endsWith('.jsonl')) return realRead(p, o)
       if (scans >= failAfter) throw new Error('stop')
       scans += 1
-      return realStream(p, o)
+      return realRead(p, o)
     }
     try {
       for (let i = 0; i < 150; i++) writeCodex(tmp, i, small)

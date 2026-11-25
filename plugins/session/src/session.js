@@ -59,31 +59,33 @@ function defaultDirs(opts = {}) {
 }
 
 const EDGE_LINES = 80;
-const MAX_TAIL_CHARS = 8 * 1024 * 1024;
+const SMALL_FILE_BYTES = 1024 * 1024;
 
 /**
- * Streams a transcript once. `onHead` gets the first lines, `onRecord` every parsed record.
- * Returns the last lines, bounded in size so a few huge records cannot exhaust the sandbox.
+ * Feeds a transcript in three parts: its first lines, the records holding one of `wanted` anywhere
+ * in the file, and its last lines. A small file is read once; a large one is read by parts, so that
+ * the other records, mostly tool output, stay on the host.
  */
-async function scanTranscript(filePath, onHead, onRecord) {
-  const tail = [];
-  let tailChars = 0;
-  let count = 0;
-  for await (const raw of fs.readLinesStream(filePath)) {
-    const line = raw.trim();
-    count += 1;
-    tail.push(line);
-    tailChars += line.length;
-    while (tail.length > EDGE_LINES || (tailChars > MAX_TAIL_CHARS && tail.length > 1)) {
-      tailChars -= tail.shift().length;
-    }
-    if (!line) continue;
-    if (count <= EDGE_LINES) onHead(line);
+async function scanTranscript(filePath, size, { head = EDGE_LINES, tail = EDGE_LINES, wanted, onHead, onRecord, onTail }) {
+  const toLines = raw => raw.split('\n').map(l => l.trim()).filter(Boolean);
+  const feedRecord = (line) => {
     let o;
-    try { o = JSON.parse(line); } catch (_) { continue; }
+    try { o = JSON.parse(line); } catch (_) { return; }
     if (o && typeof o === 'object') onRecord(o);
+  };
+
+  if (size < SMALL_FILE_BYTES) {
+    const lines = toLines(await fs.read(filePath));
+    if (onHead) lines.slice(0, head).forEach(onHead);
+    for (const line of lines) {
+      if (wanted.some(w => line.includes(w))) feedRecord(line);
+    }
+    lines.slice(-tail).forEach(onTail);
+    return;
   }
-  return tail.filter(Boolean);
+  if (onHead) toLines(await fs.read(filePath, { from: 1, to: head })).forEach(onHead);
+  for await (const line of fs.readLinesStream(filePath, { contains: wanted })) feedRecord(line);
+  toLines(await fs.read(filePath, { from: -tail })).forEach(onTail);
 }
 
 function cleanUserText(raw) {
@@ -479,7 +481,7 @@ async function summarizeClaudeFile(filePath, stat) {
   let firstTs = null;
   let lastTs = null;
   let firstCwd = null;
-  const tailLines = await scanTranscript(filePath, inspectLine, (o) => {
+  const onRecord = (o) => {
     if (!firstTs && o.timestamp) firstTs = o.timestamp;
     if (o.timestamp) lastTs = o.timestamp;
     if (!firstCwd && o.cwd) firstCwd = o.cwd;
@@ -499,10 +501,22 @@ async function summarizeClaudeFile(filePath, stat) {
         output: u.output_tokens || 0
       });
     }
+  };
+  let headTs = null;
+  await scanTranscript(filePath, stat.size, {
+    wanted: ['"usage"'],
+    onHead: l => inspectLine(l),
+    onRecord,
+    onTail: (l) => {
+      if (headTs === null) {
+        headTs = startedAt || '';
+        endedAt = null;
+      }
+      inspectLine(l);
+    }
   });
-  for (const l of tailLines) inspectLine(l);
-  startedAt = firstTs || startedAt;
-  endedAt = lastTs || endedAt;
+  startedAt = headTs || firstTs || startedAt;
+  endedAt = endedAt || lastTs;
   if (!cwd) cwd = firstCwd;
 
   const finalStarted = startedAt || stat.birthtime.toISOString();
@@ -596,7 +610,7 @@ async function summarizeAgyFile(filePath, stat) {
   const usageAcc = emptyUsage();
   let firstTs = null;
   let lastTs = null;
-  const tailLines = await scanTranscript(filePath, inspectLine, (o) => {
+  const onRecord = (o) => {
     if (!firstTs && o.created_at) firstTs = o.created_at;
     if (o.created_at) lastTs = o.created_at;
     if (o.input_tokens || o.cache_read_tokens || o.output_tokens) {
@@ -606,10 +620,22 @@ async function summarizeAgyFile(filePath, stat) {
         output: o.output_tokens || 0
       });
     }
+  };
+  let headTs = null;
+  await scanTranscript(filePath, stat.size, {
+    wanted: ['"input_tokens"', '"cache_read_tokens"', '"output_tokens"'],
+    onHead: l => inspectLine(l),
+    onRecord,
+    onTail: (l) => {
+      if (headTs === null) {
+        headTs = startedAt || '';
+        endedAt = null;
+      }
+      inspectLine(l);
+    }
   });
-  for (const l of tailLines) inspectLine(l);
-  startedAt = firstTs || startedAt;
-  endedAt = lastTs || endedAt;
+  startedAt = headTs || firstTs || startedAt;
+  endedAt = endedAt || lastTs;
 
   const isSubagent = Boolean(step0Sender && !hasUserInput);
   const finalStarted = startedAt || stat.birthtime.toISOString();
@@ -720,7 +746,17 @@ async function summarizeCodexFile(filePath, stat) {
     }
   };
 
-  await scanTranscript(filePath, () => {}, inspectRecord);
+  await scanTranscript(filePath, stat.size, {
+    tail: 20,
+    wanted: ['"session_meta"', '"turn_context"', '"user_message"', '"token_count"', '"task_complete"', '"token_usage_record"'],
+    onRecord: inspectRecord,
+    onTail: (l) => {
+      try {
+        const { timestamp } = JSON.parse(l);
+        if (timestamp) endedAt = timestamp;
+      } catch (_) {}
+    }
+  });
 
   const usageAcc = lastTotalUsage ? (codexUsageDelta(lastTotalUsage) || emptyUsage()) : turnUsageAcc;
   const finalStarted = startedAt || stat.birthtime.toISOString();
