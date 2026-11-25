@@ -1099,15 +1099,152 @@ function applyResultToToolCall(tc, rawOutput, isErrorStatus) {
   }
 }
 
-async function parseAntigravityTranscript(sessionSummary) {
-  const rawLines = (await fs.read(sessionSummary.path)).trim().split('\n').filter(Boolean);
-  const entries = [];
-  for (const l of rawLines) {
-    try {
-      entries.push(JSON.parse(l));
-    } catch (_) {}
+async function* readRecords(filePath) {
+  for await (const raw of fs.readLinesStream(filePath)) {
+    const line = raw.trim();
+    if (!line) continue;
+    let o;
+    try { o = JSON.parse(line); } catch (_) { continue; }
+    if (o && typeof o === 'object') yield o;
   }
+}
 
+// V8 keeps a whole parent string alive for a slice of it; a copy lets the large output go.
+function detach(s) {
+  return typeof s === 'string' ? JSON.parse(JSON.stringify(s)) : s;
+}
+
+function renderOutputExcerpt(output, step, shortId) {
+  const cleanOut = output
+    .replace(/^Created At:[^\r\n]*\r?\n/gm, '')
+    .replace(/^Completed At:[^\r\n]*\r?\n/gm, '')
+    .trim();
+  return cleanOut ? truncateSandwich(cleanOut, { headLines: 10, tailLines: 8, maxChars: 1200, step, shortId }) : '';
+}
+
+/**
+ * Keep rules say what a parse retains once the facts (status, exit code, answer) are taken from a
+ * tool output. `output` runs as each output arrives; `step` selects steps kept in full. Without a
+ * rule everything is kept.
+ */
+function keepForDigest(format) {
+  const level = normalizeFormat(format, 'compact');
+  const excerpts = level === 'extended' || level === 'full';
+  return {
+    step: () => false,
+    thinking: level === 'full',
+    output(tc, shortId) {
+      if (excerpts) tc.excerpt = detach(renderOutputExcerpt(tc.output, tc.step, shortId));
+      tc.output = '';
+    }
+  };
+}
+
+function keepForInspect(stepSpec) {
+  const ranges = parseStepRanges(stepSpec);
+  const step = i => ranges.some(([lo, hi]) => i >= lo && i <= hi);
+  return {
+    step,
+    thinking: false,
+    output(tc) {
+      if (!step(tc.step) && !step(tc.resultStep)) tc.output = '';
+    }
+  };
+}
+
+function keepForSearch(matches) {
+  return {
+    step: () => false,
+    thinking: false,
+    output(tc) {
+      tc.matched = matches(toolHaystack(tc));
+      tc.output = '';
+    }
+  };
+}
+
+function toolHaystack(tc) {
+  return `${tc.rawName} ${tc.target || ''} ${tc.output || ''}`;
+}
+
+function slimStep(s, keep) {
+  if (!keep || keep.step(s.index) || s.tools.some(tc => keep.step(tc.resultStep))) return;
+  if (s.rawContent) s.rawContent = '';
+  if (s.thinking && !keep.thinking) s.thinking = '';
+  if (s.kind === 'ephemeral' || s.kind === 'tool_result' || s.kind === 'compaction') s.text = '';
+  for (const tc of s.tools) tc.args = {};
+}
+
+/**
+ * Pairs streamed tool calls with their results. Each output is applied on arrival and then reduced
+ * by the keep rule; mutations, errors and blocks are reported at the end, in call order.
+ */
+function createToolLedger(meta, keep) {
+  const byId = new Map();
+  const outcomes = [];
+  let needsReplay = false;
+
+  const settle = (tc, content, isError) => {
+    applyResultToToolCall(tc, content, isError);
+    if (!keep) return;
+    keep.output(tc, meta.shortId);
+    tc.errorSummary = detach(tc.errorSummary);
+    tc.target = detach(tc.target);
+    if (tc.childId) tc.childId = detach(tc.childId);
+    if (tc.ask && tc.ask.answer) tc.ask.answer = detach(tc.ask.answer);
+  };
+
+  return {
+    settle,
+    call(id, tc, step, withResultStep = false) {
+      tc.status = tc.status || 'ok';
+      tc.output = '';
+      outcomes.push({ tc, step, withResultStep });
+      if (!id) return;
+      const entry = byId.get(id) || { calls: [], hasResult: false };
+      byId.set(id, entry);
+      entry.calls.push({ tc, target: tc.target });
+      // Its result has already gone by: a repeated row, or a result written before its call.
+      if (entry.hasResult) needsReplay = true;
+    },
+    result(id, content, isError) {
+      const entry = byId.get(id) || { calls: [], hasResult: false };
+      byId.set(id, entry);
+      entry.hasResult = true;
+      for (const { tc, target } of entry.calls) {
+        // The last result wins, so clear what an earlier one set.
+        tc.target = target;
+        for (const k of ['exitCode', 'errorSummary', 'excerpt', 'matched', 'childId']) delete tc[k];
+        if (tc.ask) delete tc.ask.answer;
+        settle(tc, content, isError);
+      }
+    },
+    /** True when results must be streamed again, now that every call is known. */
+    needsReplay: () => needsReplay,
+    mutation(m) {
+      outcomes.push({ mutation: m });
+    },
+    finish() {
+      for (const { tc, step, withResultStep, mutation } of outcomes) {
+        if (mutation) {
+          meta.mutations.push(mutation);
+          continue;
+        }
+        const at = withResultStep ? { step, resultStep: tc.resultStep } : { step };
+        if (tc.mutation && tc.status === 'ok') {
+          meta.mutations.push({ file: tc.target, fullPath: tc.file, op: tc.mutation, step });
+        }
+        if (tc.status === 'error') {
+          meta.errors.push({ ...at, tool: tc.name, target: tc.target, summary: tc.errorSummary });
+        } else if (tc.status === 'blocked') {
+          meta.hookBlocks.push({ ...at, tool: tc.name, target: tc.target, reason: tc.errorSummary });
+        }
+      }
+    }
+  };
+}
+
+async function parseAntigravityTranscript(sessionSummary, keep) {
   const meta = {
     id: sessionSummary.id,
     shortId: sessionSummary.shortId,
@@ -1118,7 +1255,7 @@ async function parseAntigravityTranscript(sessionSummary) {
     title: sessionSummary.title,
     startedAt: sessionSummary.startedAt,
     endedAt: sessionSummary.endedAt,
-    stepCount: entries.length,
+    stepCount: 0,
     durationMs: sessionSummary.durationMs || 0,
     models: sessionSummary.model ? [sessionSummary.model] : [],
     usage: emptyUsage(),
@@ -1138,9 +1275,24 @@ async function parseAntigravityTranscript(sessionSummary) {
   const seenAnchors = new Set();
   const seenModels = new Set(meta.models);
   const steps = [];
+  const ledger = createToolLedger(meta, keep);
+  const addStep = (s) => {
+    steps.push(s);
+    return s;
+  };
 
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
+  // Results arrive as GENERIC records, in call order, until the next planner response or user input.
+  let open = null;
+  const closeOpen = () => {
+    if (open) slimStep(open.step, keep);
+    open = null;
+  };
+
+  let i = -1;
+  for await (const e of readRecords(sessionSummary.path)) {
+    i += 1;
+    meta.stepCount += 1;
+    if (e.type === 'PLANNER_RESPONSE' || e.type === 'USER_INPUT') closeOpen();
     const stepIdx = typeof e.step_index === 'number' ? e.step_index : i;
     const ts = e.created_at || null;
 
@@ -1155,14 +1307,14 @@ async function parseAntigravityTranscript(sessionSummary) {
         seenAnchors.add(anchor);
         meta.anchors.push(anchor);
       }
-      steps.push({
+      slimStep(addStep({
         index: stepIdx,
         kind: 'ephemeral',
         timestamp: ts,
         text: e.content || '',
         tools: [],
         truncated: Array.isArray(e.truncated_fields) && e.truncated_fields.length > 0
-      });
+      }), keep);
       continue;
     }
 
@@ -1172,7 +1324,7 @@ async function parseAntigravityTranscript(sessionSummary) {
         seenModels.add(mMatch[1].trim());
         meta.models.push(mMatch[1].trim());
       }
-      steps.push({
+      slimStep(addStep({
         index: stepIdx,
         kind: 'user',
         timestamp: ts,
@@ -1180,7 +1332,7 @@ async function parseAntigravityTranscript(sessionSummary) {
         rawContent: e.content || '',
         tools: [],
         truncated: Array.isArray(e.truncated_fields) && e.truncated_fields.length > 0
-      });
+      }), keep);
       continue;
     }
 
@@ -1237,39 +1389,17 @@ async function parseAntigravityTranscript(sessionSummary) {
       meta.modelUsage[stepModel].turns += 1;
       if (e.thinking) meta.thinkingTurns += 1;
 
-      // Scan forward for GENERIC results before the next PLANNER_RESPONSE or USER_INPUT
-      const genericResults = [];
-      for (let j = i + 1; j < entries.length && genericResults.length < rawCalls.length; j++) {
-        const cand = entries[j];
-        if (cand.type === 'PLANNER_RESPONSE' || cand.type === 'USER_INPUT') break;
-        if (cand.type === 'GENERIC') genericResults.push({ entry: cand, pos: j });
-      }
-
       for (let k = 0; k < rawCalls.length; k++) {
         const rc = rawCalls[k];
         const tName = rc.name || rc.tool_name || 'tool';
         const tArgs = rc.args || rc.parameters || {};
         const norm = normalizeToolCall(tName, tArgs, meta.cwd);
         meta.toolCounts[norm.name] = (meta.toolCounts[norm.name] || 0) + 1;
-        const matched = genericResults[k];
-        const resultEntry = matched ? matched.entry : null;
-        const resultStepIdx = resultEntry
-          ? (typeof resultEntry.step_index === 'number' ? resultEntry.step_index : matched.pos)
-          : stepIdx;
-
         norm.step = stepIdx;
-        norm.resultStep = resultStepIdx;
-        norm.truncated = Boolean(
-          (Array.isArray(e.truncated_fields) && e.truncated_fields.length > 0) ||
-          (resultEntry && Array.isArray(resultEntry.truncated_fields) && resultEntry.truncated_fields.length > 0)
-        );
-
-        if (resultEntry && resultEntry.type === 'GENERIC') {
-          applyResultToToolCall(norm, resultEntry.content || '', resultEntry.status === 'ERROR');
-        } else {
-          norm.status = e.status === 'ERROR' ? 'error' : 'ok';
-          norm.output = '';
-        }
+        norm.resultStep = stepIdx;
+        norm.truncated = Array.isArray(e.truncated_fields) && e.truncated_fields.length > 0;
+        norm.status = e.status === 'ERROR' ? 'error' : 'ok';
+        ledger.call(null, norm, stepIdx, true);
 
         const skillName = detectSkillLoad(tName, norm.args);
         if (skillName && !seenSkills.has(skillName)) {
@@ -1277,56 +1407,51 @@ async function parseAntigravityTranscript(sessionSummary) {
           meta.skills.push({ name: skillName, step: stepIdx });
         }
 
-        if (norm.mutation && norm.status === 'ok') {
-          meta.mutations.push({ file: norm.target, fullPath: norm.file, op: norm.mutation, step: stepIdx });
-        }
-        if (norm.status === 'error') {
-          meta.errors.push({ step: stepIdx, resultStep: resultStepIdx, tool: norm.name, target: norm.target, summary: norm.errorSummary });
-        } else if (norm.status === 'blocked') {
-          meta.hookBlocks.push({ step: stepIdx, resultStep: resultStepIdx, tool: norm.name, target: norm.target, reason: norm.errorSummary });
-        }
-
         tools.push(norm);
       }
 
-      steps.push({
-        index: stepIdx,
-        kind: 'assistant',
-        timestamp: ts,
-        text: (e.content || '').trim(),
-        thinking: (e.thinking || '').trim(),
-        usage: finalizeUsage(stepUsage),
-        tools,
-        truncated: Array.isArray(e.truncated_fields) && e.truncated_fields.length > 0
-      });
+      open = {
+        pending: [...tools],
+        step: addStep({
+          index: stepIdx,
+          kind: 'assistant',
+          timestamp: ts,
+          text: (e.content || '').trim(),
+          thinking: (e.thinking || '').trim(),
+          usage: finalizeUsage(stepUsage),
+          tools,
+          truncated: Array.isArray(e.truncated_fields) && e.truncated_fields.length > 0
+        })
+      };
       continue;
     }
 
     if (e.type === 'GENERIC') {
-      steps.push({
+      const truncated = Array.isArray(e.truncated_fields) && e.truncated_fields.length > 0;
+      const tc = open ? open.pending.shift() : null;
+      if (tc) {
+        tc.resultStep = stepIdx;
+        tc.truncated = tc.truncated || truncated;
+        ledger.settle(tc, e.content || '', e.status === 'ERROR');
+      }
+      slimStep(addStep({
         index: stepIdx,
         kind: 'tool_result',
         timestamp: ts,
         status: e.status,
         text: e.content || '',
         tools: [],
-        truncated: Array.isArray(e.truncated_fields) && e.truncated_fields.length > 0
-      });
+        truncated
+      }), keep);
     }
   }
+  closeOpen();
+  ledger.finish();
 
   return finalizeParsedSession(meta, steps, sessionSummary);
 }
 
-async function parseClaudeTranscript(sessionSummary) {
-  const rawLines = (await fs.read(sessionSummary.path)).trim().split('\n').filter(Boolean);
-  const entries = [];
-  for (const l of rawLines) {
-    try {
-      entries.push(JSON.parse(l));
-    } catch (_) {}
-  }
-
+async function parseClaudeTranscript(sessionSummary, keep) {
   const meta = {
     id: sessionSummary.id,
     shortId: sessionSummary.shortId,
@@ -1357,9 +1482,9 @@ async function parseClaudeTranscript(sessionSummary) {
   const seenAnchors = new Set();
   const seenModels = new Set(meta.models);
 
-  // First pass: collect tool_result blocks by tool_use_id
-  const toolResultsById = new Map();
-  for (const e of entries) {
+  const ledger = createToolLedger(meta, keep);
+
+  const readRowFacts = (e) => {
     if (!meta.cwd && e.cwd) {
       meta.cwd = e.cwd;
       meta.project = path.basename(e.cwd);
@@ -1387,15 +1512,11 @@ async function parseClaudeTranscript(sessionSummary) {
           if (rowAgentId && !textOut.includes(rowAgentId)) {
             textOut = `${textOut}\nagentId: ${rowAgentId}`;
           }
-          toolResultsById.set(b.tool_use_id, {
-            content: textOut,
-            isError: Boolean(b.is_error),
-            agentId: rowAgentId
-          });
+          ledger.result(b.tool_use_id, textOut, Boolean(b.is_error));
         }
       }
     }
-  }
+  };
 
   const steps = [];
   let stepCounter = 0;
@@ -1434,7 +1555,8 @@ async function parseClaudeTranscript(sessionSummary) {
     });
   };
 
-  for (const e of entries) {
+  for await (const e of readRecords(sessionSummary.path)) {
+    readRowFacts(e);
     const ts = e.timestamp || null;
 
     if (e.type === 'attachment' && e.attachment) {
@@ -1490,14 +1612,9 @@ async function parseClaudeTranscript(sessionSummary) {
         if (isCompactionSummaryText(rawPart)) {
           const idx = stepCounter++;
           meta.compactions.push({ step: idx, timestamp: ts });
-          steps.push({
-            index: idx,
-            kind: 'compaction',
-            timestamp: ts,
-            text: rawPart,
-            tools: [],
-            truncated: false
-          });
+          const s = { index: idx, kind: 'compaction', timestamp: ts, text: rawPart, tools: [], truncated: false };
+          slimStep(s, keep);
+          steps.push(s);
           continue;
         }
 
@@ -1510,15 +1627,9 @@ async function parseClaudeTranscript(sessionSummary) {
 
         const cleaned = cleanUserText(rawPart);
         if (cleaned) {
-          steps.push({
-            index: stepCounter++,
-            kind: 'user',
-            timestamp: ts,
-            text: cleaned,
-            rawContent: rawPart,
-            tools: [],
-            truncated: false
-          });
+          const s = { index: stepCounter++, kind: 'user', timestamp: ts, text: cleaned, rawContent: rawPart, tools: [], truncated: false };
+          slimStep(s, keep);
+          steps.push(s);
         }
       }
       continue;
@@ -1563,27 +1674,12 @@ async function parseClaudeTranscript(sessionSummary) {
           norm.resultStep = currentIdx;
           norm.truncated = false;
 
-          const tr = b.id ? toolResultsById.get(b.id) : null;
-          if (tr) {
-            applyResultToToolCall(norm, tr.content, tr.isError);
-          } else {
-            norm.status = 'ok';
-            norm.output = '';
-          }
+          ledger.call(b.id, norm, currentIdx);
 
           const skillName = detectSkillLoad(b.name, norm.args);
           if (skillName && !seenSkills.has(skillName)) {
             seenSkills.add(skillName);
             meta.skills.push({ name: skillName, step: currentIdx });
-          }
-
-          if (norm.mutation && norm.status === 'ok') {
-            meta.mutations.push({ file: norm.target, fullPath: norm.file, op: norm.mutation, step: currentIdx });
-          }
-          if (norm.status === 'error') {
-            meta.errors.push({ step: currentIdx, tool: norm.name, target: norm.target, summary: norm.errorSummary });
-          } else if (norm.status === 'blocked') {
-            meta.hookBlocks.push({ step: currentIdx, tool: norm.name, target: norm.target, reason: norm.errorSummary });
           }
 
           meta.toolCounts[norm.name] = (meta.toolCounts[norm.name] || 0) + 1;
@@ -1606,6 +1702,7 @@ async function parseClaudeTranscript(sessionSummary) {
             tc.resultStep = prev.index;
             prev.tools.push(tc);
           }
+          slimStep(prev, keep);
         } else {
           steps.push({
             index: stepCounter++,
@@ -1618,11 +1715,16 @@ async function parseClaudeTranscript(sessionSummary) {
             tools,
             truncated: false
           });
+          slimStep(steps[steps.length - 1], keep);
         }
       }
     }
   }
+  if (ledger.needsReplay()) {
+    for await (const e of readRecords(sessionSummary.path)) readRowFacts(e);
+  }
 
+  ledger.finish();
   meta.stepCount = steps.length;
   return finalizeParsedSession(meta, steps, sessionSummary);
 }
@@ -1660,6 +1762,7 @@ function foldToolRuns(toolCalls) {
         exitCode: tc.exitCode,
         errorSummary: tc.errorSummary,
         output: tc.output || '',
+        excerpt: tc.excerpt,
         ask: tc.ask || null,
         canFold,
         count: 1,
@@ -1875,13 +1978,7 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
 }
 
 
-async function parseCodexTranscript(sessionSummary) {
-  const rawLines = (await fs.read(sessionSummary.path)).trim().split('\n').filter(Boolean);
-  const entries = [];
-  for (const l of rawLines) {
-    try { entries.push(JSON.parse(l)); } catch (_) {}
-  }
-
+async function parseCodexTranscript(sessionSummary, keep) {
   const meta = {
     id: sessionSummary.id,
     shortId: sessionSummary.shortId,
@@ -1909,16 +2006,14 @@ async function parseCodexTranscript(sessionSummary) {
   };
 
   const seenModels = new Set(meta.models);
-  const toolOutputsByCallId = new Map();
-
-  for (const e of entries) {
+  const ledger = createToolLedger(meta, keep);
+  const readResult = (e) => {
     const p = e.payload;
-    if (!p || typeof p !== 'object') continue;
-    if (e.type === 'response_item' && (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') && p.call_id) {
-      const textOut = extractCodexOutputText(p.output);
-      toolOutputsByCallId.set(p.call_id, { content: textOut, isError: false });
+    if (e.type !== 'response_item' || !p || !p.call_id) return;
+    if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
+      ledger.result(p.call_id, extractCodexOutputText(p.output), false);
     }
-  }
+  };
 
   const steps = [];
   let stepCounter = 0;
@@ -1954,7 +2049,7 @@ async function parseCodexTranscript(sessionSummary) {
     }
   };
 
-  for (const e of entries) {
+  for await (const e of readRecords(sessionSummary.path)) {
     const ts = e.timestamp || null;
     const p = e.payload;
     if (!p || typeof p !== 'object') continue;
@@ -1998,6 +2093,7 @@ async function parseCodexTranscript(sessionSummary) {
         tools: [],
         truncated: false
       });
+      slimStep(steps[steps.length - 1], keep);
       continue;
     }
 
@@ -2014,6 +2110,7 @@ async function parseCodexTranscript(sessionSummary) {
             tools: [],
             truncated: false
           });
+          slimStep(steps[steps.length - 1], keep);
         }
       } else if (p.type === 'token_count' && p.info) {
         const tot = Number(p.info.total_token_usage?.total_tokens) || 0;
@@ -2027,7 +2124,7 @@ async function parseCodexTranscript(sessionSummary) {
         for (const filePath of Object.keys(p.changes)) {
           const ch = p.changes[filePath];
           const op = ch && ch.type === 'add' ? 'write' : 'edit';
-          meta.mutations.push({ file: shortPath(filePath, meta.cwd), fullPath: filePath, op, step: refStep });
+          ledger.mutation({ file: shortPath(filePath, meta.cwd), fullPath: filePath, op, step: refStep });
         }
       }
       continue;
@@ -2097,6 +2194,7 @@ async function parseCodexTranscript(sessionSummary) {
             tools: [],
             truncated: false
           });
+          slimStep(steps[steps.length - 1], keep);
         }
       } else if (p.type === 'custom_tool_call' || p.type === 'function_call') {
         let rawArgs = {};
@@ -2115,22 +2213,7 @@ async function parseCodexTranscript(sessionSummary) {
         norm.resultStep = currentIdx;
         norm.truncated = false;
 
-        const tr = p.call_id ? toolOutputsByCallId.get(p.call_id) : null;
-        if (tr) {
-          applyResultToToolCall(norm, tr.content, tr.isError);
-        } else {
-          norm.status = 'ok';
-          norm.output = '';
-        }
-
-        if (norm.mutation && norm.status === 'ok') {
-          meta.mutations.push({ file: norm.target, fullPath: norm.file, op: norm.mutation, step: currentIdx });
-        }
-        if (norm.status === 'error') {
-          meta.errors.push({ step: currentIdx, tool: norm.name, target: norm.target, summary: norm.errorSummary });
-        } else if (norm.status === 'blocked') {
-          meta.hookBlocks.push({ step: currentIdx, tool: norm.name, target: norm.target, reason: norm.errorSummary });
-        }
+        ledger.call(p.call_id, norm, currentIdx);
         meta.toolCounts[norm.name] = (meta.toolCounts[norm.name] || 0) + 1;
 
         steps.push({
@@ -2144,10 +2227,17 @@ async function parseCodexTranscript(sessionSummary) {
           tools: [norm],
           truncated: false
         });
+        slimStep(steps[steps.length - 1], keep);
+      } else {
+        readResult(e);
       }
     }
   }
+  if (ledger.needsReplay()) {
+    for await (const e of readRecords(sessionSummary.path)) readResult(e);
+  }
 
+  ledger.finish();
   meta.stepCount = steps.length;
   return finalizeParsedSession(meta, steps, sessionSummary);
 }
@@ -2162,12 +2252,12 @@ async function parseSession(sessionOrId, opts = {}) {
   }
 
   if (summary.harness === 'agy') {
-    return parseAntigravityTranscript(summary);
+    return parseAntigravityTranscript(summary, opts.keep);
   }
   if (summary.harness === 'codex') {
-    return parseCodexTranscript(summary);
+    return parseCodexTranscript(summary, opts.keep);
   }
-  return parseClaudeTranscript(summary);
+  return parseClaudeTranscript(summary, opts.keep);
 }
 
 function fmtDateLocal(iso) {
@@ -2387,19 +2477,9 @@ function formatDigestMarkdown(parsed, opts = {}) {
         const runs = t.toolRuns;
         const appendRunWithOptionalOutput = (run) => {
           lines.push(formatToolRunLine(run));
-          if ((format === 'extended' || format === 'full') && run.output && !run.ask) {
-            const cleanOut = run.output
-              .replace(/^Created At:[^\r\n]*\r?\n/gm, '')
-              .replace(/^Completed At:[^\r\n]*\r?\n/gm, '')
-              .trim();
-            if (cleanOut) {
-              const boundedOut = truncateSandwich(cleanOut, {
-                headLines: 10,
-                tailLines: 8,
-                maxChars: 1200,
-                step: run.startStep,
-                shortId: meta.shortId
-              });
+          if ((format === 'extended' || format === 'full') && !run.ask) {
+            const boundedOut = run.excerpt ?? renderOutputExcerpt(run.output, run.startStep, meta.shortId);
+            if (boundedOut) {
               lines.push('  ```text');
               for (const ol of boundedOut.split(/\r?\n/)) {
                 lines.push(`  ${ol}`);
@@ -2539,6 +2619,19 @@ function formatDigestMarkdown(parsed, opts = {}) {
   return lines.join('\n');
 }
 
+function parseStepRanges(spec) {
+  const normalized = Array.isArray(spec) ? spec.join(',') : String(spec || '');
+  const ranges = [];
+  for (const p of normalized.split(/[\s,]+/).filter(Boolean)) {
+    const m = /^#?(\d+)(?:(?:\.\.|-|:)(\d+))?$/.exec(p);
+    if (!m) continue;
+    const a = Number(m[1]);
+    const b = m[2] === undefined ? a : Number(m[2]);
+    ranges.push([Math.min(a, b), Math.max(a, b)]);
+  }
+  return ranges;
+}
+
 function parseStepRangeSpec(spec, maxStep) {
   const wanted = new Set();
   const normalized = Array.isArray(spec) ? spec.join(',') : String(spec || '');
@@ -2559,15 +2652,17 @@ function parseStepRangeSpec(spec, maxStep) {
   return Array.from(wanted).sort((a, b) => a - b);
 }
 
-async function loadFullAntigravityEntries(fullPath) {
+async function loadFullAntigravityEntries(fullPath, wanted) {
   if (!fullPath || !(await fs.exists(fullPath))) return null;
   const map = new Map();
-  const lines = (await fs.read(fullPath)).trim().split('\n').filter(Boolean);
-  for (let i = 0; i < lines.length; i++) {
+  let i = -1;
+  for await (const line of fs.readLinesStream(fullPath)) {
+    if (!line) continue;
+    i += 1;
     try {
-      const o = JSON.parse(lines[i]);
+      const o = JSON.parse(line);
       const idx = typeof o.step_index === 'number' ? o.step_index : i;
-      map.set(idx, o);
+      if (wanted.has(idx)) map.set(idx, o);
     } catch (_) {}
   }
   return map;
@@ -2616,7 +2711,10 @@ async function formatInspectMarkdown(parsed, stepSpec, opts = {}) {
       s => s.truncated || (Array.isArray(s.tools) && s.tools.some(tc => tc.truncated))
     );
     if (needsFull) {
-      fullAgyMap = await loadFullAntigravityEntries(sessionSummary.fullPath);
+      fullAgyMap = await loadFullAntigravityEntries(
+        sessionSummary.fullPath,
+        new Set(foundSteps.flatMap(s => [s.index, ...s.tools.map(tc => tc.resultStep)]))
+      );
     }
   }
 
@@ -2763,6 +2861,7 @@ function compileSearchMatcher(query) {
 
 async function searchSessions(query, opts = {}) {
   const matches = compileSearchMatcher(query);
+  const keep = keepForSearch(matches);
   const limit = Number(opts.limit) > 0 ? Number(opts.limit) : 20;
   const sessions = await listSessions({
     ...opts,
@@ -2773,13 +2872,19 @@ async function searchSessions(query, opts = {}) {
   const hits = [];
   for (const s of sessions) {
     if (hits.length >= limit) break;
-    const raw = await fs.read(s.path, { throw: false });
-    if (!raw || !matches(raw)) continue;
-
     let parsed;
     try {
-      parsed = await parseSession(s, opts);
-    } catch (_) {
+      let mayMatch = false;
+      for await (const line of fs.readLinesStream(s.path)) {
+        if (matches(line)) {
+          mayMatch = true;
+          break;
+        }
+      }
+      if (!mayMatch) continue;
+      parsed = await parseSession(s, { ...opts, keep });
+    } catch (err) {
+      if (opts.onSkip) opts.onSkip(s, err);
       continue;
     }
 
@@ -2814,8 +2919,7 @@ async function searchSessions(query, opts = {}) {
         }
         for (const tc of t.tools || []) {
           if (hits.length >= limit) break;
-          const hay = `${tc.rawName} ${tc.target || ''} ${tc.output || ''}`;
-          if (matches(hay)) {
+          if (tc.matched ?? matches(toolHaystack(tc))) {
             hits.push({
               id: parsed.meta.id,
               shortId: parsed.meta.shortId,
@@ -2839,6 +2943,8 @@ export {
   searchSessions,
   resolveSession,
   parseSession,
+  keepForDigest,
+  keepForInspect,
   formatDigestMarkdown,
   formatInspectMarkdown,
   formatStatMarkdown,

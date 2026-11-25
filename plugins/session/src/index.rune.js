@@ -5,6 +5,8 @@ import {
   formatDigestMarkdown,
   formatInspectMarkdown,
   formatStatMarkdown,
+  keepForDigest,
+  keepForInspect,
   listSessions,
   parseSession,
   searchSessions,
@@ -112,7 +114,9 @@ export async function run(parsed) {
   }
 
   if (cmd === 'search') {
+    const skipped = []
     const hits = await searchSessions(parsed.query, {
+      onSkip: (s, err) => skipped.push(`${s.path}: ${err.message}`),
       cwd: await fs.resolve('.'),
       project: parsed.project,
       all: Boolean(parsed.all),
@@ -120,15 +124,16 @@ export async function run(parsed) {
       subagents: Boolean(parsed.subagents),
       limit: Number(parsed.limit) || 20,
     })
+    const skipNote = skipped.map(s => `\n(skipped unreadable transcript ${s})`).join('')
     if (hits.length === 0) {
-      return [section.create('session', { type: 'markdown', content: 'No matching transcript lines found.', hits: [] })]
+      return [section.create('session', { type: 'markdown', content: `No matching transcript lines found.${skipNote}`, hits: [] })]
     }
     const lines = hits.map(h => {
       const hBadge = h.harness === 'claude' ? 'claude' : (h.harness === 'codex' ? 'codex ' : 'agy   ')
       const loc = h.turnNum ? `U/A#${h.turnNum} step #${h.step}` : `step #${h.step}`
       return `${h.shortId}  ${hBadge}  ${(h.project || 'unknown').padEnd(14).slice(0, 14)}  [${loc} · ${h.kind}]  ${h.snippet}`
     })
-    return [section.create('session', { type: 'markdown', content: lines.join('\n'), hits })]
+    return [section.create('session', { type: 'markdown', content: lines.join('\n') + skipNote, hits })]
   }
 
   if (cmd === 'digest' || cmd === 'read') {
@@ -136,6 +141,7 @@ export async function run(parsed) {
       cwd: await fs.resolve('.'),
       project: parsed.project,
       harness: parsed.harness,
+      keep: keepForDigest(parsed.format || 'compact'),
     })
     const md = formatDigestMarkdown(sessionData, { format: parsed.format || 'compact', tail: parsed.tail })
     return [section.create('session', { type: 'markdown', content: md })]
@@ -146,6 +152,7 @@ export async function run(parsed) {
       cwd: await fs.resolve('.'),
       project: parsed.project,
       harness: parsed.harness,
+      keep: keepForDigest('compact'),
     })
     const md = formatStatMarkdown(sessionData)
     const payload = { type: 'markdown', content: md }
@@ -166,11 +173,12 @@ export async function run(parsed) {
   }
 
   if (cmd === 'inspect' || cmd === 'step') {
+    const stepSpec = Array.isArray(parsed.steps) ? parsed.steps.join(',') : String(parsed.steps || '')
     const sessionData = await parseSession(parsed.id, {
       cwd: await fs.resolve('.'),
       harness: parsed.harness,
+      keep: keepForInspect(stepSpec),
     })
-    const stepSpec = Array.isArray(parsed.steps) ? parsed.steps.join(',') : String(parsed.steps || '')
     const md = await formatInspectMarkdown(sessionData, stepSpec, { format: parsed.format || 'extended' })
     return [section.create('session', { type: 'markdown', content: md })]
   }

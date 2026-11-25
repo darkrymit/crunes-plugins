@@ -24,6 +24,8 @@ const {
   normalizeFormat,
   parseSession,
   parseStepRangeSpec,
+  keepForDigest,
+  keepForInspect,
   resolveSession,
   searchSessions,
 } = await import('../src/session.js')
@@ -419,6 +421,68 @@ describe('session.js (large and broken transcripts)', () => {
       const skipped = []
       const list = await listSessions({ homeDir: tmp, all: true, noCache: true, onSkip: (stub, err) => skipped.push(err.message) })
       assert.equal(list.length, 1)
+      assert.deepEqual(skipped, ['unreadable'])
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  const call = (id, n) => JSON.stringify({ timestamp: '2026-11-24T10:00:02Z', type: 'response_item', payload: { type: 'function_call', call_id: id, name: 'shell', arguments: JSON.stringify({ command: `run ${n}` }) } })
+  const result = (id, output) => JSON.stringify({ timestamp: '2026-11-24T10:00:03Z', type: 'response_item', payload: { type: 'function_call_output', call_id: id, output } })
+  const big = 'вивід '.repeat(2000)
+
+  it('drops tool output a command does not show, and keeps it for inspected steps', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-keep-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    try {
+      const file = writeCodex(tmp, 1, [...small, call('a', 1), result('a', `first ${big}`), call('b', 2), result('b', `second ${big}`)])
+      const load = keep => parseSession(file, { homeDir: tmp, keep })
+      const held = p => JSON.stringify(p).length
+      assert.ok(held(await load()) > 20_000)
+      assert.ok(held(await load(keepForDigest('compact'))) < 10_000)
+      const full = formatDigestMarkdown(await load(), { format: 'extended' })
+      assert.equal(formatDigestMarkdown(await load(keepForDigest('extended')), { format: 'extended' }), full)
+      const inspected = await formatInspectMarkdown(await load(keepForInspect('2')), '2', { format: 'full' })
+      assert.equal(inspected, await formatInspectMarkdown(await load(), '2', { format: 'full' }))
+      assert.match(inspected, /second/)
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('pairs a repeated call and a result written before its call', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-repeat-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    try {
+      const file = writeCodex(tmp, 1, [...small, call('a', 1), result('a', 'repeated output'), result('z', 'early output'), call('z', 2), call('a', 1)])
+      const show = async step => formatInspectMarkdown(await parseSession(file, { homeDir: tmp, keep: keepForInspect(step) }), step, { format: 'full' })
+      assert.match(await show('1'), /repeated output/)
+      assert.match(await show('2'), /early output/)
+      assert.match(await show('3'), /repeated output/)
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('searches inside dropped tool output and reports a session it cannot read', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-search-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const realStream = env.utils.fs.readLinesStream
+    try {
+      writeCodex(tmp, 1, [...small, call('a', 1), result('a', `${big} needle-here`)])
+      writeCodex(tmp, 2, small)
+      const opts = { homeDir: tmp, all: true, cacheFile: path.join(tmp, 'cache.json') }
+      await listSessions(opts)
+      env.utils.fs.readLinesStream = (p, o) => {
+        if (p.endsWith('000000000002.jsonl')) throw new Error('unreadable')
+        return realStream(p, o)
+      }
+      const skipped = []
+      const hits = await searchSessions('needle-here', { ...opts, onSkip: (_, err) => skipped.push(err.message) })
+      assert.deepEqual(hits.map(h => h.kind.startsWith('tool:')), [true])
       assert.deepEqual(skipped, ['unreadable'])
     } finally {
       await env.cleanup()

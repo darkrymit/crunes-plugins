@@ -22,7 +22,7 @@ Installed globally with `-g` (`crunes plugin install crunes-plugins@session -g`)
 
 Transcripts can outgrow the sandbox memory limit, so summaries stream each file once through `fs.readLinesStream` and never hold it whole. `list` must scan every uncached file before it can sort, because order follows the transcript's own last timestamp rather than the file's modification time. The summary cache is saved every 100 files so an interrupted first scan resumes.
 
-`digest`, `stat`, `inspect` and `search` still load a whole transcript.
+`digest`, `stat`, `inspect` and `search` stream too. Each tool output is applied to its call as it arrives (status, exit code, error, answer), then a keep rule drops whatever the command does not print: a digest keeps at most the excerpt it shows, `inspect` keeps the requested steps, `search` matches on arrival. A call whose result has already gone by (a repeated row) triggers a second pass over the results. Conversation text is always kept, so memory still grows with the dialogue and with the longest line.
 
 ## Permissions
 
