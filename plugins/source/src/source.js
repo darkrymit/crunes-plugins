@@ -166,7 +166,7 @@ async function readNow(source, { base, now, recorded }) {
       if (platform === 'tiktok') {
         for (const id of ids) if (BigInt(id) > BigInt(newest)) newest = id
       }
-      const idsSha256 = crypt.hashAsHex('sha256', [...ids].sort().join('\n'))
+      const idsSha256 = await crypt.hashAsHex('sha256', [...ids].sort().join('\n'))
       return { count: ids.length, newest, ids_sha256: idsSha256 }
     }
     let best = await listOnce()
