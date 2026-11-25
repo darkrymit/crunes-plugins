@@ -50,7 +50,8 @@ Enabling a command is not enough — it also needs the permission its work requi
             "ws.client:ws*://*/q/dev-ui/json-rpc-ws",
             "cache.read:@local-cache::qdev-server",
             "cache.write:@local-cache::qdev-server",
-            "shell.job.start:mvnw quarkus:dev *",
+            "shell.job.start:./mvnw quarkus:dev *",
+            "shell.run:./mvnw quarkus:dev *",
             "shell.job.exists",
             "shell.job.kill",
             "shell.job.read"
@@ -64,7 +65,9 @@ Enabling a command is not enough — it also needs the permission its work requi
 
 All six of the plugin's own grants are restated there, and that is not redundancy: **declaring `allow` replaces the plugin's list entirely rather than adding to it.** Omit them and the commands that were working stop working.
 
-`server.reload` needs one grant beyond the four above — it drives the running Quarkus process through its stdin, which is a write, not a read:
+Starting a job is checked twice, once as a job and once as a shell command, so `server.start` needs both `shell.job.start` and `shell.run`.
+
+`server.reload` needs one grant beyond the five above — it drives the running Quarkus process through its stdin, which is a write, not a read:
 
 ```json
 "shell.job.write"

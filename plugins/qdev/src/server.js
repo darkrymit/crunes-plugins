@@ -1,11 +1,8 @@
 import { shell, cache, http, vars, section } from '@utils'
+import { buildMvnwCommand } from './server-command.js'
 
 const CACHE_LOCATION = '@local-cache'
 const CACHE_NAME = 'qdev-server'
-
-function buildMvnwCommand(profile) {
-  return `mvnw quarkus:dev -Dquarkus.console.basic=true -Dquarkus.profile=$${profile}`
-}
 
 async function getCache() {
   return cache.open(CACHE_LOCATION, CACHE_NAME)

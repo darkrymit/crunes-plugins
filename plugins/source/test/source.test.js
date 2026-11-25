@@ -16,12 +16,12 @@ const { setupCrunesTest } = await import(
 )
 const { checkSources, recordSources, tiktokPostDate, validateSources } = await import('../src/source.js')
 
-function runCrunes(cwd, args) {
+function runCrunes(cwd, args, env = process.env) {
   const useLocal = fs.existsSync(localCrunesCli)
   const cmd = process.execPath
   const cli = useLocal ? localCrunesCli : fileURLToPath(import.meta.resolve('@darkrymit/crunes-cli'))
   const fullArgs = [cli, ...args]
-  return execFileSync(cmd, fullArgs, { cwd, encoding: 'utf8' })
+  return execFileSync(cmd, fullArgs, { cwd, env, encoding: 'utf8' })
 }
 
 describe('source.js (unit with @utils shim)', () => {
@@ -110,6 +110,66 @@ describe('source.rune.js (E2E isolate)', () => {
       fs.writeFileSync(path.join(tmp, 'data.txt'), 'beta\n', 'utf8')
       const movedOut = runCrunes(tmp, ['-p', 'run', 'source', 'check', 'sources.json'])
       assert.match(movedOut, /data\s+file\s+moved/)
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('runs record and check on tiktok-channel inside isolated-vm without returning a Promise', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-source-tt-'))
+    try {
+      const binDir = path.join(tmp, 'bin')
+      fs.mkdirSync(binDir, { recursive: true })
+      const dump = JSON.stringify({ entries: [{ id: '7709748506675645704' }] })
+      const dumpPath = path.join(binDir, 'yt-dlp.json').replace(/\\/g, '/')
+      fs.writeFileSync(path.join(binDir, 'yt-dlp.json'), dump, 'utf8')
+      const sh = path.join(binDir, 'yt-dlp')
+      fs.writeFileSync(sh, `#!/bin/sh\ncat "${dumpPath}"\n`, 'utf8')
+      fs.chmodSync(sh, 0o755)
+      if (process.platform === 'win32') {
+        fs.writeFileSync(
+          path.join(binDir, 'yt-dlp.cmd'),
+          `@echo off\r\ntype "${path.join(binDir, 'yt-dlp.json')}"\r\n`,
+          'utf8'
+        )
+      }
+
+      fs.mkdirSync(path.join(tmp, '.crunes', 'runes'), { recursive: true })
+      fs.cpSync(srcDir, path.join(tmp, '.crunes', 'runes', 'source'), { recursive: true })
+      fs.writeFileSync(
+        path.join(tmp, '.crunes', 'config.json'),
+        JSON.stringify({
+          format: '1',
+          runes: {
+            source: {
+              run: {
+                command: '.crunes/runes/source/index.rune.js',
+                permissions: {
+                  allow: ['fs.read:**', 'fs.write:**', 'fs.glob:**::*', 'shell.run:*', 'os.platform'],
+                },
+              },
+            },
+          },
+        }),
+        'utf8'
+      )
+
+      fs.writeFileSync(
+        path.join(tmp, 'sources.json'),
+        JSON.stringify({
+          sources: [{ id: 'tiktok', type: 'tiktok-channel', location: 'https://www.tiktok.com/@testuser' }],
+        }),
+        'utf8'
+      )
+
+      const pathKey = Object.keys(process.env).find(k => k.toLowerCase() === 'path') || 'PATH'
+      const env = { ...process.env, [pathKey]: `${binDir}${path.delimiter}${process.env[pathKey] || ''}` }
+
+      const recOut = runCrunes(tmp, ['-p', 'run', 'source', 'record', 'sources.json'], env)
+      assert.match(recOut, /tiktok\s+tiktok-channel\s+recorded/)
+
+      const checkOut = runCrunes(tmp, ['-p', 'run', 'source', 'check', 'sources.json'], env)
+      assert.match(checkOut, /tiktok\s+tiktok-channel\s+same/)
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true })
     }
