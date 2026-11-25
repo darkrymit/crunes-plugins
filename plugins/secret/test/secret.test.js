@@ -51,6 +51,60 @@ describe('mask (pure unit)', () => {
     const parsed = JSON.parse(filteredJson)
     assert.deepEqual(parsed, { port: 3000, apiSecret: 'to••••••99' })
   })
+
+  it('masks commented assignments and keeps the rest of the comment readable', () => {
+    const out = maskConfig(
+      [
+        '# service config',
+        '# DB_PASSWORD=fakecommentedpw',
+        '#;  OLD_API_KEY=fakeoldvalue1',
+        '; WEBHOOK_SECRET = fakehookvalue',
+        '# PORT=8080',
+        '# Run with: ./mvnw quarkus:dev',
+      ].join('\n'),
+      '.env'
+    )
+    for (const leak of ['fakecommentedpw', 'fakeoldvalue1', 'fakehookvalue']) assert.ok(!out.includes(leak), leak)
+    assert.match(out, /^# service config$/m)
+    assert.match(out, /^# DB_PASSWORD=fa••••••pw$/m)
+    assert.match(out, /^#; {2}OLD_API_KEY=fa••••••e1$/m)
+    assert.match(out, /^# PORT=8080$/m)
+    assert.match(out, /^# Run with: \.\/mvnw quarkus:dev$/m)
+  })
+
+  it('treats names that are or end in key as sensitive, but not words that merely contain it', () => {
+    const out = maskConfig(
+      ['PROD_ELEVEN_KEY=fakevalue-one', 'key=fakevalue-two', 'app.signing.key=fakevalue-three', 'KEYBOARD=qwerty-layout', 'MONKEY=banana-split'].join('\n'),
+      'app.properties'
+    )
+    assert.doesNotMatch(out, /fakevalue/)
+    assert.match(out, /^KEYBOARD=qwerty-layout$/m)
+    assert.match(out, /^MONKEY=banana-split$/m)
+  })
+
+  it('masks known token shapes under any name, in comments, plain lines and JSON', () => {
+    const tokens = ['sk_1a2b3c4d5e6f7a8b9c0d', 'ghp_1a2b3c4d5e6f7a8b9c0d', 'AIza1a2b3c4d5e6f7a8b9c0d', 'tvly-dev-1a2b3c4d5e6f7a8b', 'eyJ1a2b3c4d5e6f.7a8b9c0d']
+    const env = tokens.flatMap((t, i) => [`THING_${i}=${t}`, `# previously ${t} was used`, `  ${t}`]).join('\n')
+    const out = maskConfig(env, '.env')
+    const json = maskConfig(JSON.stringify({ thing: tokens[0], list: tokens }), 'config.json')
+    for (const t of tokens) {
+      assert.ok(!out.includes(t), t)
+      assert.ok(!json.includes(t), t)
+    }
+    assert.match(out, /^# previously sk••••••0d was used$/m)
+    assert.equal(maskConfig('NAME=risk_assessment_module', '.env'), 'NAME=risk_assessment_module')
+  })
+
+  it('masks private key blocks whole', () => {
+    const block = ['-----BEGIN PRIVATE KEY-----', 'ZmFrZWtleWJvZHk=', 'c2Vjb25kbGluZQ==', '-----END PRIVATE KEY-----']
+    const out = maskConfig(['A=1', ...block, 'B=2', `CERT="${block.join('\n')}"`, 'C=3'].join('\n'), '.env')
+    assert.doesNotMatch(out, /ZmFrZWtleWJvZHk|c2Vjb25kbGluZQ/)
+    assert.match(out, /^A=1$/m)
+    assert.match(out, /^B=2$/m)
+    assert.match(out, /^C=3$/m)
+    assert.doesNotMatch(maskConfig(JSON.stringify({ pem: block.join('\n') }), 'a.json'), /ZmFrZWtleWJvZHk/)
+    assert.equal(maskConfig(['A=1', ...block, 'B=2'].join('\n'), '.env', ['b']), 'B=2')
+  })
 })
 
 describe('secret.rune.js (E2E isolate)', () => {
