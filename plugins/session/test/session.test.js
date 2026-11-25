@@ -29,9 +29,8 @@ const {
 } = await import('../src/session.js')
 
 
-function makeAgyFixture(tmp) {
-  const convId = '11111111-2222-3333-4444-555555555555'
-  const logsDir = path.join(tmp, '.gemini', 'antigravity', 'brain', convId, '.system_generated', 'logs')
+function makeAgyFixture(tmp, app = 'antigravity', convId = '11111111-2222-3333-4444-555555555555') {
+  const logsDir = path.join(tmp, '.gemini', app, 'brain', convId, '.system_generated', 'logs')
   fs.mkdirSync(logsDir, { recursive: true })
   const lines = [
     JSON.stringify({
@@ -301,6 +300,44 @@ describe('session.js (unit + fixture)', () => {
 
 })
 
+describe('session.js (Antigravity folders)', () => {
+  it('lists desktop, CLI and IDE sessions and skips folders that do not exist', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-agy-apps-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const opts = { homeDir: tmp, all: true, noCache: true }
+    try {
+      makeAgyFixture(tmp, 'antigravity-cli', 'cccccccc-2222-3333-4444-555555555555')
+      assert.deepEqual((await listSessions(opts)).map(s => s.shortId), ['cccccccc'])
+      makeAgyFixture(tmp, 'antigravity', 'aaaaaaaa-2222-3333-4444-555555555555')
+      makeAgyFixture(tmp, 'antigravity-ide', 'bbbbbbbb-2222-3333-4444-555555555555')
+      const list = await listSessions({ ...opts, harness: 'agy' })
+      assert.deepEqual(list.map(s => s.shortId).sort(), ['aaaaaaaa', 'bbbbbbbb', 'cccccccc'])
+      assert.deepEqual([...new Set(list.map(s => s.harness))], ['agy'])
+      assert.equal((await listSessions({ ...opts, agyDir: path.join(tmp, '.gemini', 'antigravity-cli', 'brain') })).length, 1)
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('lists an id present in two folders once, using the newest copy', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-agy-dup-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    try {
+      const id = makeAgyFixture(tmp, 'antigravity')
+      makeAgyFixture(tmp, 'antigravity-cli')
+      const old = new Date('2026-11-20T00:00:00Z')
+      fs.utimesSync(path.join(tmp, '.gemini', 'antigravity', 'brain', id, '.system_generated', 'logs', 'transcript.jsonl'), old, old)
+      const list = await listSessions({ homeDir: tmp, all: true, noCache: true })
+      assert.equal(list.length, 1)
+      assert.match(list[0].path, /antigravity-cli/)
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('session.js (large and broken transcripts)', () => {
   const writeCodex = (tmp, n, lines) => {
     const dir = path.join(tmp, '.codex', 'sessions')
@@ -328,6 +365,40 @@ describe('session.js (large and broken transcripts)', () => {
       const byPath = await resolveSession(file, { homeDir: tmp })
       assert.equal(byPath.harness, 'codex')
       assert.deepEqual(reads, [])
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to file dates for a transcript without timestamps', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-notime-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    try {
+      const file = writeCodex(tmp, 1, [JSON.stringify({ type: 'session_meta', payload: { cwd: '/w/demo' } })])
+      const when = new Date('2026-11-20T00:00:00Z')
+      fs.utimesSync(file, when, when)
+      const [s] = await listSessions({ homeDir: tmp, all: true, noCache: true })
+      assert.equal(s.endedAt, when.toISOString())
+      assert.equal(s.mtimeMs, when.getTime())
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('rescans a cached transcript edited without changing its size', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-samesize-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const opts = { homeDir: tmp, all: true, cacheFile: path.join(tmp, 'cache.json') }
+    const withPrompt = message => [small[0], JSON.stringify({ ...prompt, payload: { type: 'user_message', message } })]
+    try {
+      const file = writeCodex(tmp, 1, withPrompt('first'))
+      fs.utimesSync(file, new Date('2026-11-20T00:00:00Z'), new Date('2026-11-20T00:00:00Z'))
+      assert.equal((await listSessions(opts))[0].firstPrompt, 'first')
+      writeCodex(tmp, 1, withPrompt('other'))
+      fs.utimesSync(file, new Date('2026-11-21T00:00:00Z'), new Date('2026-11-21T00:00:00Z'))
+      assert.equal((await listSessions(opts))[0].firstPrompt, 'other')
     } finally {
       await env.cleanup()
       fs.rmSync(tmp, { recursive: true, force: true })
@@ -382,6 +453,31 @@ describe('session.js (large and broken transcripts)', () => {
 })
 
 describe('session.rune.js (E2E isolate)', () => {
+  it('reads every Antigravity folder with only the grants plugin.json declares for it', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-grants-'))
+    try {
+      const manifest = JSON.parse(fs.readFileSync(path.join(srcDir, '../.crunes-plugin/plugin.json'), 'utf8'))
+      const ids = { antigravity: 'aaaaaaaa', 'antigravity-cli': 'cccccccc', 'antigravity-ide': 'bbbbbbbb' }
+      for (const [app, id] of Object.entries(ids)) makeAgyFixture(tmp, app, `${id}-2222-3333-4444-555555555555`)
+      // The broad fs.read:** grant is left out on purpose: it would hide a missing folder grant.
+      const allow = manifest.runes.session.run.permissions.allow.filter(p => p.includes('.gemini/antigravity'))
+      fs.mkdirSync(path.join(tmp, '.crunes', 'runes'), { recursive: true })
+      fs.cpSync(srcDir, path.join(tmp, '.crunes', 'runes', 'session'), { recursive: true })
+      fs.writeFileSync(path.join(tmp, '.crunes', 'config.json'), JSON.stringify({
+        runes: { session: { run: { command: '.crunes/runes/session/index.rune.js', permissions: { allow: [...allow, 'fs.read:./.crunes/runes/session/**', ...Object.values(ids).map(id => `fs.read:${id}`)] } } } },
+      }))
+      const env = { ...process.env, HOME: tmp, USERPROFILE: tmp }
+      const listOut = runCrunes(tmp, ['-p', 'run', 'session', 'list', '--all', '--harness', 'agy'], env)
+      for (const id of Object.values(ids)) {
+        assert.match(listOut, new RegExp(id))
+        assert.match(runCrunes(tmp, ['-p', 'run', 'session', 'digest', id, '--harness', 'agy'], env), /Everything in the demo workspace is clean/)
+        assert.match(runCrunes(tmp, ['-p', 'run', 'session', 'inspect', id, '1..2', '--harness', 'agy'], env), /Step #2/)
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   it('runs list, digest, and inspect inside isolated-vm using ~/ grants', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-iso-'))
     try {

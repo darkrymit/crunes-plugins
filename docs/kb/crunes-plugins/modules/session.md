@@ -8,7 +8,7 @@ resource: plugins/session/
 
 # session
 
-Converts raw Claude Code (`~/.claude/projects/`) and Antigravity (`~/.gemini/antigravity/brain/`) JSONL transcripts into three progressive Markdown lenses (`list`, `digest`, `inspect`).
+Converts raw Claude Code (`~/.claude/projects/`) and Antigravity desktop, CLI and IDE (`~/.gemini/antigravity{,-cli,-ide}/brain/`) JSONL transcripts into three progressive Markdown lenses (`list`, `digest`, `inspect`).
 
 ## Usage
 
@@ -26,4 +26,4 @@ Transcripts can outgrow the sandbox memory limit, so summaries stream each file 
 
 ## Permissions
 
-Declares `fs.glob` (`~/.claude/projects::**/*.jsonl`, `~/.gemini/antigravity/brain::**/transcript.jsonl`) and `fs.read` (`~/.claude/projects/**`, `~/.gemini/antigravity/brain/**`, `**`).
+Declares `fs.glob` (`~/.claude/projects::**/*.jsonl`, `~/.gemini/antigravity{,-cli,-ide}/brain::**/transcript.jsonl`, one grant each) and `fs.read` (`~/.claude/projects/**`, `~/.gemini/antigravity{,-cli,-ide}/brain/**`, one grant each, `**`).

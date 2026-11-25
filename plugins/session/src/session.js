@@ -1,8 +1,12 @@
 import { fs } from '@utils';
 
+// fs.stat returns its dates as ISO strings and has no millisecond fields.
 async function safeStat(p) {
   try {
-    return await fs.stat(p);
+    const s = await fs.stat(p);
+    const mtime = new Date(s.mtime);
+    const birthtime = new Date(s.birthtime);
+    return { ...s, mtime, birthtime, mtimeMs: mtime.getTime(), birthtimeMs: birthtime.getTime() };
   } catch {
     return null;
   }
@@ -32,7 +36,7 @@ const path = {
 
 /**
  * Dual-harness session reader for Claude Code (~/.claude/projects/<project>/<id>.jsonl)
- * and Antigravity (~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl).
+ * and Antigravity (~/.gemini/antigravity{,-cli,-ide}/brain/<id>/.system_generated/logs/transcript.jsonl).
  *
  * Converts raw JSONL transcripts (85-95% tool-result payloads and telemetry envelopes)
  * into three progressive lenses:
@@ -42,11 +46,14 @@ const path = {
  *   3. inspect — full un-truncated step drill-down (with transcript_full.jsonl fallback)
  */
 
+// Desktop app, CLI and IDE keep separate transcript folders of the same shape.
+const AGY_APPS = ['antigravity', 'antigravity-cli', 'antigravity-ide'];
+
 function defaultDirs(opts = {}) {
   const home = opts.homeDir || '~';
   return {
     claudeDir: opts.claudeDir || path.join(home, '.claude', 'projects'),
-    agyDir: opts.agyDir || path.join(home, '.gemini', 'antigravity', 'brain'),
+    agyDirs: opts.agyDir ? [opts.agyDir] : AGY_APPS.map(app => path.join(home, '.gemini', app, 'brain')),
     codexDir: opts.codexDir || path.join(home, '.codex', 'sessions')
   };
 }
@@ -748,7 +755,7 @@ async function summarizeCodexFile(filePath, stat) {
 }
 
 async function discoverSessionStubs(opts = {}) {
-    const { claudeDir, agyDir, codexDir } = defaultDirs(opts);
+    const { claudeDir, agyDirs, codexDir } = defaultDirs(opts);
   const wantHarness = opts.harness ? opts.harness.toLowerCase() : null;
   const includeSubagents = Boolean(opts.includeSubagents || opts.subagents);
   const stubs = [];
@@ -774,8 +781,9 @@ async function discoverSessionStubs(opts = {}) {
     } catch (_) {}
   }
 
-  if ((!wantHarness || wantHarness === 'agy' || wantHarness === 'antigravity') && (await fs.exists(agyDir))) {
+  for (const agyDir of !wantHarness || wantHarness === 'agy' || wantHarness === 'antigravity' ? agyDirs : []) {
     try {
+      if (!(await fs.exists(agyDir))) continue;
       const files = await fs.glob('**/transcript.jsonl', { cwd: agyDir, dot: true });
       for (const rel of files) {
         const norm = rel.replace(/\\/g, '/');
@@ -806,7 +814,9 @@ async function discoverSessionStubs(opts = {}) {
   }
 
   stubs.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return stubs;
+  // A conversation opened in two Antigravity apps can exist twice; keep the newest copy.
+  const seenAgy = new Set();
+  return stubs.filter(s => s.harness !== 'agy' || (!seenAgy.has(s.id) && seenAgy.add(s.id)));
 }
 
 function resolveCachePath(opts = {}) {
