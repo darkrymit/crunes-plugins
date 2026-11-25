@@ -3,7 +3,7 @@
   "runes": {
     "session": {
       "name": "Session Reader",
-      "description": "Discover and read Claude Code and Antigravity session transcripts as Markdown",
+      "description": "Discover and read Claude Code, Antigravity, and Codex session transcripts as Markdown",
       "run": {
         "command": "src/index.rune.js",
         "permissions": {
@@ -12,6 +12,8 @@
             "fs.glob:~/.gemini/antigravity/brain::**/transcript.jsonl",
             "fs.read:~/.claude/projects/**",
             "fs.read:~/.gemini/antigravity/brain/**",
+            "fs.glob:~/.codex/sessions::**/*.jsonl",
+            "fs.read:~/.codex/sessions/**",
             "fs.read:**"
           ],
           "deny": []

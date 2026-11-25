@@ -23,11 +23,11 @@ function fmtAge(ms) {
 export function args(b) {
   return b
     .option('-h, --help', 'Show help')
-    .command('list', 'List recent sessions across Claude Code and Antigravity', c => {
+    .command('list', 'List recent sessions across Claude Code, Antigravity, and Codex', c => {
       c.positional('[query]', 'Filter by session id, title, or project')
        .option('-p, --project <name>', 'Filter by project or workspace name')
        .option('-a, --all', 'Show sessions across all projects', false)
-       .option('--harness <name>', 'Filter by harness (claude | agy)')
+       .option('--harness <name>', 'Filter by harness (claude | agy | codex)')
        .option('--subagents', 'Include child subagent sessions', false)
        .option('-s, --sort <by>', 'Sort by: recent | tokens | duration | size', 'recent')
        .option('-n, --limit <number>', 'Maximum sessions to return', '15')
@@ -37,19 +37,19 @@ export function args(b) {
        .option('-f, --format <level>', 'Detail level: compact | standard | extended | full', 'compact')
        .option('-t, --tail <turns>', 'Only include the last N turns')
        .option('-p, --project <name>', 'Project filter when resolving latest')
-       .option('--harness <name>', 'Harness filter (claude | agy)')
+       .option('--harness <name>', 'Harness filter (claude | agy | codex)')
     })
     .command('read', 'Alias for digest', c => {
       c.positional('[id]', 'Session ID, path, or latest')
        .option('-f, --format <level>', 'Detail level: compact | standard | extended | full', 'compact')
        .option('-t, --tail <turns>', 'Only include the last N turns')
        .option('-p, --project <name>', 'Project filter when resolving latest')
-       .option('--harness <name>', 'Harness filter (claude | agy)')
+       .option('--harness <name>', 'Harness filter (claude | agy | codex)')
     })
     .command('stat', 'Show token, model, tool, and hot-turn usage for a single session', c => {
       c.positional('[id]', 'Session ID, path, or latest')
        .option('-p, --project <name>', 'Project filter when resolving latest')
-       .option('--harness <name>', 'Harness filter (claude | agy)')
+       .option('--harness <name>', 'Harness filter (claude | agy | codex)')
        .option('--json', 'Include structured usage payload', false)
     })
     .command('inspect', 'Inspect step details and outputs', c => {
@@ -86,7 +86,7 @@ export async function run(parsed) {
     }
 
     const lines = items.map(s => {
-      const hBadge = s.harness === 'claude' ? 'claude' : 'agy   '
+      const hBadge = s.harness === 'claude' ? 'claude' : (s.harness === 'codex' ? 'codex ' : 'agy   ')
       const projBadge = (s.project || 'unknown').padEnd(14).slice(0, 14)
       const ageBadge = fmtAge(s.endedMs || s.mtimeMs).padStart(7)
       const durBadge = fmtDuration(s.durationMs || 0).padStart(6)

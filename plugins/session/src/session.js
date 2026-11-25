@@ -46,7 +46,8 @@ function defaultDirs(opts = {}) {
   const home = opts.homeDir || '~';
   return {
     claudeDir: opts.claudeDir || path.join(home, '.claude', 'projects'),
-    agyDir: opts.agyDir || path.join(home, '.gemini', 'antigravity', 'brain')
+    agyDir: opts.agyDir || path.join(home, '.gemini', 'antigravity', 'brain'),
+    codexDir: opts.codexDir || path.join(home, '.codex', 'sessions')
   };
 }
 
@@ -308,12 +309,22 @@ function normalizeToolCall(rawName, rawArgs, cwd) {
     const p = args.file_path || args.Path || args.TargetFile || args.path || '';
     return { name: 'write', rawName, target: shortPath(p, cwd) || 'file', file: p, mutation: 'write', args };
   }
-  if (lower === 'bash' || lower === 'run_command') {
-    let cmd = args.command || args.CommandLine || '';
+  if (lower === 'bash' || lower === 'run_command' || lower === 'exec_command' || lower === 'shell' || lower === 'exec') {
+    let cmd = args.command || args.CommandLine || args.cmd || args.input || '';
+    if (lower === 'exec' && typeof cmd === 'string') {
+      const m = /exec_command\(\s*\{\s*cmd\s*:\s*"([^"]+)"/.exec(cmd);
+      if (m) cmd = m[1];
+    }
     // Strip outer Git Bash wrapper if present for cleaner display
-    const bashWrap = /^&\s*"[^"]*bash\.exe"\s*-l?c\s*(['"])([\s\S]*)\1$/.exec(cmd.trim());
+    const bashWrap = /^&\s*"[^"]*bash\.exe"\s*-l?c\s*(['"])([\s\S]*)\1$/.exec(String(cmd).trim());
     if (bashWrap) cmd = bashWrap[2];
     return { name: 'bash', rawName, target: `"${oneLine(cmd, 72)}"`, command: cmd, args };
+  }
+  if (lower === 'apply_patch') {
+    const patchText = String(args.input || args.patch || '');
+    const fileMatch = /^\*\*\* (?:Update|Add|Delete) File:\s*(.+)$/m.exec(patchText);
+    const p = fileMatch ? fileMatch[1].trim() : '';
+    return { name: 'edit', rawName, target: p ? shortPath(p, cwd) : 'patch', file: p, mutation: 'edit', args };
   }
   if (lower === 'grep' || lower === 'grep_search') {
     const pat = args.pattern || args.Query || '';
@@ -328,10 +339,10 @@ function normalizeToolCall(rawName, rawArgs, cwd) {
   if (lower === 'skill') {
     return { name: 'skill', rawName, target: String(args.skill || ''), args };
   }
-  if (lower === 'askuserquestion' || lower === 'ask_question') {
+  if (lower === 'askuserquestion' || lower === 'ask_question' || lower === 'request_user_input_async' || lower === 'request_user_input') {
     const qList = Array.isArray(args.questions) ? args.questions : [];
     const q0 = qList[0] || {};
-    const qText = q0.question || args.question || '';
+    const qText = q0.question || q0.title || args.question || '';
     const options = Array.isArray(q0.options)
       ? q0.options.map(o => (typeof o === 'string' ? o : (o.label || o.text || '')))
       : [];
@@ -347,8 +358,8 @@ function normalizeToolCall(rawName, rawArgs, cwd) {
       args
     };
   }
-  if (lower === 'agent' || lower === 'invoke_subagent') {
-    const role = args.Role || args.description || args.subagent_type || args.TypeName || 'subagent';
+  if (lower === 'agent' || lower === 'invoke_subagent' || lower === 'spawn_agent' || lower === 'followup_task') {
+    const role = args.Role || args.description || args.subagent_type || args.TypeName || args.task_name || args.target || 'subagent';
     const model = args.Model || args.model || '';
     return {
       name: 'subagent',
@@ -608,8 +619,138 @@ async function summarizeAgyFile(filePath, stat) {
   };
 }
 
+
+function extractCodexIdFromPath(filePath) {
+  const base = path.basename(filePath, '.jsonl');
+  const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(base);
+  return m ? m[1] : base;
+}
+
+function codexUsageDelta(u) {
+  if (!u || typeof u !== 'object') return null;
+  const rawInput = Number(u.input_tokens) || 0;
+  const cacheRead = Number(u.cached_input_tokens) || 0;
+  const cacheCreate = Number(u.cache_write_input_tokens) || 0;
+  const output = Number(u.output_tokens) || 0;
+  // OpenAI/Codex input_tokens already includes cached_input_tokens
+  const input = Math.max(0, rawInput - cacheRead - cacheCreate);
+  return { input, cacheCreate, cacheRead, output };
+}
+
+function extractCodexOutputText(output) {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) {
+    return output
+      .map(x => (typeof x === 'string' ? x : (x && x.text ? x.text : JSON.stringify(x))))
+      .join('');
+  }
+  if (output && typeof output === 'object') return JSON.stringify(output);
+  return '';
+}
+
+async function summarizeCodexFile(filePath, stat) {
+  let id = extractCodexIdFromPath(filePath);
+  const { headLines, tailLines } = await readHeadAndTailLines(filePath);
+
+  let cwd = null;
+  let branch = null;
+  let model = null;
+  let firstPrompt = null;
+  let title = null;
+  let startedAt = null;
+  let endedAt = null;
+  let isSubagent = false;
+  let parentId = null;
+  let agentPath = null;
+  let lastTotalUsage = null;
+  const turnUsageAcc = emptyUsage();
+
+  const inspectLine = (line) => {
+    let o;
+    try { o = JSON.parse(line); } catch (_) { return; }
+    if (!startedAt && o.timestamp) startedAt = o.timestamp;
+    if (o.timestamp) endedAt = o.timestamp;
+    const p = o.payload;
+    if (!p || typeof p !== 'object') return;
+
+    if (o.type === 'session_meta') {
+      if (p.id) id = String(p.id);
+      else if (p.session_id && !id) id = String(p.session_id);
+      if (!cwd && p.cwd) cwd = p.cwd;
+      if (!branch && p.git && p.git.branch) branch = p.git.branch;
+      if (p.timestamp && (!startedAt || toMs(p.timestamp) < toMs(startedAt))) startedAt = p.timestamp;
+      if (p.parent_thread_id || p.thread_source === 'subagent' || (p.source && p.source.subagent)) {
+        isSubagent = true;
+        parentId = p.parent_thread_id || p.source?.subagent?.thread_spawn?.parent_thread_id || parentId;
+        agentPath = p.agent_path || p.source?.subagent?.thread_spawn?.agent_path || agentPath;
+      }
+    } else if (o.type === 'turn_context') {
+      if (!cwd && p.cwd) cwd = p.cwd;
+      if (p.model) model = p.model;
+    } else if (o.type === 'event_msg') {
+      if (p.type === 'user_message' && p.message && !firstPrompt) {
+        firstPrompt = oneLine(cleanUserText(p.message), 100);
+      } else if (p.type === 'token_count' && p.info && p.info.total_token_usage) {
+        lastTotalUsage = p.info.total_token_usage;
+      } else if (p.type === 'task_complete' && p.last_agent_message && !title && isSubagent) {
+        title = `[${agentPath || 'subagent'}] ${oneLine(p.last_agent_message, 80)}`;
+      }
+    } else if (o.type === 'token_usage_record' && p.turn_token_usage) {
+      const d = codexUsageDelta(p.turn_token_usage);
+      if (d) addUsage(turnUsageAcc, d);
+    }
+  };
+
+  for (const l of headLines) inspectLine(l);
+  for (const l of tailLines) inspectLine(l);
+
+  const fullRaw = await fs.read(filePath, { throw: false });
+  if (fullRaw) {
+    // Reset turnUsageAcc before full scan so we don't double-count head/tail
+    turnUsageAcc.input = 0;
+    turnUsageAcc.cacheCreate = 0;
+    turnUsageAcc.cacheRead = 0;
+    turnUsageAcc.output = 0;
+    for (const line of fullRaw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      inspectLine(line);
+    }
+  }
+
+  const usageAcc = lastTotalUsage ? (codexUsageDelta(lastTotalUsage) || emptyUsage()) : turnUsageAcc;
+  const finalStarted = startedAt || stat.birthtime.toISOString();
+  const finalEnded = endedAt || stat.mtime.toISOString();
+  const durationMs = Math.max(0, toMs(finalEnded, stat.mtimeMs) - toMs(finalStarted, stat.birthtimeMs));
+  const project = cwd ? path.basename(cwd) : 'unknown';
+  if (!title && isSubagent && agentPath) {
+    title = `[subagent] ${agentPath}`;
+  }
+
+  return {
+    id,
+    shortId: id.slice(0, 8),
+    harness: 'codex',
+    project: project || 'unknown',
+    cwd: cwd || null,
+    branch: branch || null,
+    model: model || null,
+    title: title || firstPrompt || id.slice(0, 8),
+    firstPrompt: firstPrompt || '',
+    isSubagent,
+    parentId: parentId || null,
+    startedAt: finalStarted,
+    endedAt: finalEnded,
+    endedMs: toMs(finalEnded, stat.mtimeMs),
+    durationMs,
+    usage: finalizeUsage(usageAcc),
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    path: filePath
+  };
+}
+
 async function discoverSessionStubs(opts = {}) {
-    const { claudeDir, agyDir } = defaultDirs(opts);
+    const { claudeDir, agyDir, codexDir } = defaultDirs(opts);
   const wantHarness = opts.harness ? opts.harness.toLowerCase() : null;
   const includeSubagents = Boolean(opts.includeSubagents || opts.subagents);
   const stubs = [];
@@ -652,14 +793,28 @@ async function discoverSessionStubs(opts = {}) {
     } catch (_) {}
   }
 
+  if ((!wantHarness || wantHarness === 'codex') && (await fs.exists(codexDir))) {
+    try {
+      const files = await fs.glob('**/*.jsonl', { cwd: codexDir, dot: true });
+      for (const rel of files) {
+        const norm = rel.replace(/\\/g, '/');
+        const fullFile = path.join(codexDir, norm);
+        const st = await safeStat(fullFile);
+        if (!st || !st.isFile || st.size <= 0) continue;
+        const id = extractCodexIdFromPath(fullFile);
+        stubs.push({ id, harness: 'codex', path: fullFile, stat: st, mtimeMs: st.mtimeMs });
+      }
+    } catch (_) {}
+  }
+
   stubs.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return stubs;
 }
 
 async function hydrateStub(stub) {
-  return stub.harness === 'claude'
-    ? summarizeClaudeFile(stub.path, stub.stat)
-    : summarizeAgyFile(stub.path, stub.stat);
+  if (stub.harness === 'claude') return summarizeClaudeFile(stub.path, stub.stat);
+  if (stub.harness === 'codex') return summarizeCodexFile(stub.path, stub.stat);
+  return summarizeAgyFile(stub.path, stub.stat);
 }
 
 async function listSessions(opts = {}) {
@@ -744,6 +899,9 @@ async function resolveSession(idOrLatest, opts = {}) {
       if (typeof parsed.step_index === 'number' || parsed.source === 'USER_EXPLICIT' || parsed.type === 'PLANNER_RESPONSE' || parsed.type === 'SYSTEM_MESSAGE') {
         return summarizeAgyFile(idOrLatest, st);
       }
+      if (parsed.type === 'session_meta' || parsed.type === 'turn_context' || parsed.type === 'event_msg' || parsed.type === 'response_item') {
+        return summarizeCodexFile(idOrLatest, st);
+      }
       return summarizeClaudeFile(idOrLatest, st);
     }
   }
@@ -805,10 +963,13 @@ function applyResultToToolCall(tc, rawOutput, isErrorStatus) {
   // Check for command exit codes
   const agyExit = /Command exited with code (\d+)/.exec(outStr);
   const claudeExit = /^Exit code (\d+)/m.exec(outStr);
+  const codexExit = /"exit_code"\s*:\s*(\d+)/.exec(outStr);
   if (agyExit) {
     tc.exitCode = Number(agyExit[1]);
   } else if (claudeExit) {
     tc.exitCode = Number(claudeExit[1]);
+  } else if (codexExit) {
+    tc.exitCode = Number(codexExit[1]);
   } else if (tc.name === 'bash' && !isErrorStatus) {
     tc.exitCode = 0;
   }
@@ -1632,6 +1793,284 @@ function finalizeParsedSession(meta, steps, sessionSummary) {
   };
 }
 
+
+async function parseCodexTranscript(sessionSummary) {
+  const rawLines = (await fs.read(sessionSummary.path)).trim().split('\n').filter(Boolean);
+  const entries = [];
+  for (const l of rawLines) {
+    try { entries.push(JSON.parse(l)); } catch (_) {}
+  }
+
+  const meta = {
+    id: sessionSummary.id,
+    shortId: sessionSummary.shortId,
+    harness: 'codex',
+    project: sessionSummary.project,
+    cwd: sessionSummary.cwd,
+    branch: sessionSummary.branch,
+    title: sessionSummary.title,
+    startedAt: sessionSummary.startedAt,
+    endedAt: sessionSummary.endedAt,
+    stepCount: 0,
+    durationMs: sessionSummary.durationMs || 0,
+    models: sessionSummary.model ? [sessionSummary.model] : [],
+    usage: emptyUsage(),
+    modelUsage: {},
+    toolCounts: {},
+    thinkingTurns: 0,
+    anchors: [],
+    compactions: [],
+    skills: [],
+    mutations: [],
+    errors: [],
+    hookBlocks: [],
+    loops: []
+  };
+
+  const seenModels = new Set(meta.models);
+  const toolOutputsByCallId = new Map();
+
+  for (const e of entries) {
+    const p = e.payload;
+    if (!p || typeof p !== 'object') continue;
+    if (e.type === 'response_item' && (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') && p.call_id) {
+      const textOut = extractCodexOutputText(p.output);
+      toolOutputsByCallId.set(p.call_id, { content: textOut, isError: false });
+    }
+  }
+
+  const steps = [];
+  let stepCounter = 0;
+  let lastTotalTokensSeen = 0;
+  let lastCompactionTs = 0;
+
+  const attachUsageToLatestAssistant = (delta, ts) => {
+    addUsage(meta.usage, delta);
+    const stepUsage = finalizeUsage(delta);
+    const mName = meta.models[meta.models.length - 1] || 'codex';
+    if (!meta.modelUsage[mName]) meta.modelUsage[mName] = { ...emptyUsage(), turns: 0 };
+    addUsage(meta.modelUsage[mName], delta);
+    meta.modelUsage[mName].turns += 1;
+
+    const lastAssistant = [...steps].reverse().find(s => s.kind === 'assistant');
+    if (lastAssistant) {
+      const merged = { ...lastAssistant.usage };
+      addUsage(merged, delta);
+      lastAssistant.usage = finalizeUsage(merged);
+      if (ts) lastAssistant.endTimestamp = ts;
+    } else {
+      steps.push({
+        index: stepCounter++,
+        kind: 'assistant',
+        timestamp: ts,
+        endTimestamp: ts,
+        text: '',
+        thinking: '',
+        usage: stepUsage,
+        tools: [],
+        truncated: false
+      });
+    }
+  };
+
+  for (const e of entries) {
+    const ts = e.timestamp || null;
+    const p = e.payload;
+    if (!p || typeof p !== 'object') continue;
+
+    if (e.type === 'session_meta') {
+      if (!meta.cwd && p.cwd) {
+        meta.cwd = p.cwd;
+        meta.project = path.basename(p.cwd);
+      }
+      if (!meta.branch && p.git && p.git.branch) meta.branch = p.git.branch;
+      if (p.parent_thread_id || p.thread_source === 'subagent' || (p.source && p.source.subagent)) {
+        meta.isSubagent = true;
+        meta.parentId = p.parent_thread_id || p.source?.subagent?.thread_spawn?.parent_thread_id || meta.parentId;
+      }
+      continue;
+    }
+
+    if (e.type === 'turn_context') {
+      if (!meta.cwd && p.cwd) {
+        meta.cwd = p.cwd;
+        meta.project = path.basename(p.cwd);
+      }
+      if (p.model && !seenModels.has(p.model)) {
+        seenModels.add(p.model);
+        meta.models.push(p.model);
+      }
+      continue;
+    }
+
+    if (e.type === 'compacted' || (e.type === 'event_msg' && p.type === 'context_compacted')) {
+      const tsMs = toMs(ts, 0);
+      if (lastCompactionTs && Math.abs(tsMs - lastCompactionTs) < 5000) continue;
+      lastCompactionTs = tsMs || Date.now();
+      const idx = stepCounter++;
+      meta.compactions.push({ step: idx, timestamp: ts });
+      steps.push({
+        index: idx,
+        kind: 'compaction',
+        timestamp: ts,
+        text: p.message || 'Context compacted',
+        tools: [],
+        truncated: false
+      });
+      continue;
+    }
+
+    if (e.type === 'event_msg') {
+      if (p.type === 'user_message' && p.message) {
+        const cleaned = cleanUserText(p.message);
+        if (cleaned) {
+          steps.push({
+            index: stepCounter++,
+            kind: 'user',
+            timestamp: ts,
+            text: cleaned,
+            rawContent: p.message,
+            tools: [],
+            truncated: false
+          });
+        }
+      } else if (p.type === 'token_count' && p.info) {
+        const tot = Number(p.info.total_token_usage?.total_tokens) || 0;
+        if (tot > lastTotalTokensSeen && p.info.last_token_usage) {
+          lastTotalTokensSeen = tot;
+          const delta = codexUsageDelta(p.info.last_token_usage);
+          if (delta) attachUsageToLatestAssistant(delta, ts);
+        }
+      } else if (p.type === 'patch_apply_end' && p.success && p.changes && typeof p.changes === 'object') {
+        const refStep = Math.max(0, stepCounter - 1);
+        for (const filePath of Object.keys(p.changes)) {
+          const ch = p.changes[filePath];
+          const op = ch && ch.type === 'add' ? 'write' : 'edit';
+          meta.mutations.push({ file: shortPath(filePath, meta.cwd), fullPath: filePath, op, step: refStep });
+        }
+      }
+      continue;
+    }
+
+    if (e.type === 'response_item') {
+      if (p.type === 'message' && p.role === 'assistant' && Array.isArray(p.content)) {
+        const text = p.content
+          .filter(b => b && b.text)
+          .map(b => b.text.trim())
+          .filter(Boolean)
+          .join('\n');
+        if (text) {
+          steps.push({
+            index: stepCounter++,
+            kind: 'assistant',
+            timestamp: ts,
+            endTimestamp: ts,
+            text,
+            thinking: '',
+            usage: emptyUsage(),
+            tools: [],
+            truncated: false
+          });
+        }
+      } else if (p.type === 'agent_message' && Array.isArray(p.content)) {
+        const text = p.content
+          .filter(b => b && b.text)
+          .map(b => b.text.trim())
+          .filter(Boolean)
+          .join('\n');
+        if (meta.isSubagent && !steps.some(s => s.kind === 'user')) {
+          steps.push({
+            index: stepCounter++,
+            kind: 'user',
+            timestamp: ts,
+            text: `[Parent #${(meta.parentId || 'root').slice(0, 8)}] ${text || p.recipient || 'subagent task'}`,
+            rawContent: text,
+            tools: [],
+            truncated: false
+          });
+        } else if (!meta.isSubagent && p.recipient === '/root') {
+          steps.push({
+            index: stepCounter++,
+            kind: 'subagent',
+            timestamp: ts,
+            sender: path.basename(p.author || 'subagent'),
+            text,
+            tools: [],
+            truncated: false
+          });
+        }
+      } else if (p.type === 'reasoning') {
+        meta.thinkingTurns += 1;
+        const summaryText = Array.isArray(p.summary)
+          ? p.summary.map(s => (typeof s === 'string' ? s : s?.text || '')).filter(Boolean).join('\n')
+          : '';
+        if (summaryText) {
+          steps.push({
+            index: stepCounter++,
+            kind: 'assistant',
+            timestamp: ts,
+            endTimestamp: ts,
+            text: '',
+            thinking: summaryText,
+            usage: emptyUsage(),
+            tools: [],
+            truncated: false
+          });
+        }
+      } else if (p.type === 'custom_tool_call' || p.type === 'function_call') {
+        let rawArgs = {};
+        if (p.arguments) {
+          if (typeof p.arguments === 'string') {
+            try { rawArgs = JSON.parse(p.arguments); } catch (_) { rawArgs = { input: p.arguments }; }
+          } else if (typeof p.arguments === 'object') {
+            rawArgs = p.arguments;
+          }
+        } else if (p.input !== undefined) {
+          rawArgs = typeof p.input === 'object' ? p.input : { input: String(p.input) };
+        }
+        const currentIdx = stepCounter;
+        const norm = normalizeToolCall(p.name, rawArgs, meta.cwd);
+        norm.step = currentIdx;
+        norm.resultStep = currentIdx;
+        norm.truncated = false;
+
+        const tr = p.call_id ? toolOutputsByCallId.get(p.call_id) : null;
+        if (tr) {
+          applyResultToToolCall(norm, tr.content, tr.isError);
+        } else {
+          norm.status = 'ok';
+          norm.output = '';
+        }
+
+        if (norm.mutation && norm.status === 'ok') {
+          meta.mutations.push({ file: norm.target, fullPath: norm.file, op: norm.mutation, step: currentIdx });
+        }
+        if (norm.status === 'error') {
+          meta.errors.push({ step: currentIdx, tool: norm.name, target: norm.target, summary: norm.errorSummary });
+        } else if (norm.status === 'blocked') {
+          meta.hookBlocks.push({ step: currentIdx, tool: norm.name, target: norm.target, reason: norm.errorSummary });
+        }
+        meta.toolCounts[norm.name] = (meta.toolCounts[norm.name] || 0) + 1;
+
+        steps.push({
+          index: stepCounter++,
+          kind: 'assistant',
+          timestamp: ts,
+          endTimestamp: ts,
+          text: '',
+          thinking: '',
+          usage: emptyUsage(),
+          tools: [norm],
+          truncated: false
+        });
+      }
+    }
+  }
+
+  meta.stepCount = steps.length;
+  return finalizeParsedSession(meta, steps, sessionSummary);
+}
+
 async function parseSession(sessionOrId, opts = {}) {
     const summary = typeof sessionOrId === 'object' && sessionOrId !== null && sessionOrId.path
     ? sessionOrId
@@ -1643,6 +2082,9 @@ async function parseSession(sessionOrId, opts = {}) {
 
   if (summary.harness === 'agy') {
     return parseAntigravityTranscript(summary);
+  }
+  if (summary.harness === 'codex') {
+    return parseCodexTranscript(summary);
   }
   return parseClaudeTranscript(summary);
 }

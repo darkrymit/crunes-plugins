@@ -195,6 +195,103 @@ describe('session.js (unit + fixture)', () => {
       fs.rmSync(tmp, { recursive: true, force: true })
     }
   })
+
+  it('lists, parses, stats, digests, and inspects a Codex rollout transcript fixture', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-codex-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    try {
+      const sessDir = path.join(tmp, '.codex', 'sessions', '2026', '11', '25')
+      fs.mkdirSync(sessDir, { recursive: true })
+      const sessId = '33333333-4444-5555-6666-777777777777'
+      const rolloutFile = path.join(sessDir, `rollout-2026-11-25T10-00-00-${sessId}.jsonl`)
+      fs.writeFileSync(rolloutFile, [
+        JSON.stringify({
+          timestamp: '2026-11-25T10:00:00.000Z',
+          type: 'session_meta',
+          payload: {
+            id: sessId,
+            cwd: '/home/user/demo-app',
+            git: { branch: 'feat/codex' },
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-11-25T10:00:01.000Z',
+          type: 'turn_context',
+          payload: { cwd: '/home/user/demo-app', model: 'gpt-6.1-sol' },
+        }),
+        JSON.stringify({
+          timestamp: '2026-11-25T10:00:02.000Z',
+          type: 'event_msg',
+          payload: { type: 'user_message', message: 'Check failing tests in demo-app' },
+        }),
+        JSON.stringify({
+          timestamp: '2026-11-25T10:00:03.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'custom_tool_call',
+            call_id: 'call_1',
+            name: 'exec',
+            input: 'text(await tools.exec_command({cmd:"npm test"}));',
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-11-25T10:00:05.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'custom_tool_call_output',
+            call_id: 'call_1',
+            output: [{ type: 'input_text', text: '{"exit_code":1,"output":"1 test failed"}' }],
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-11-25T10:00:06.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'Found 1 failing test in demo-app.' }],
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-11-25T10:00:07.000Z',
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: {
+              total_token_usage: { input_tokens: 10000, cached_input_tokens: 9000, cache_write_input_tokens: 0, output_tokens: 200, total_tokens: 10200 },
+              last_token_usage: { input_tokens: 10000, cached_input_tokens: 9000, cache_write_input_tokens: 0, output_tokens: 200, total_tokens: 10200 },
+            },
+          },
+        }),
+      ].join('\n') + '\n')
+
+      const sessions = await listSessions({ homeDir: tmp, all: true, harness: 'codex' })
+      assert.equal(sessions.length, 1)
+      assert.equal(sessions[0].shortId, '33333333')
+      assert.equal(sessions[0].project, 'demo-app')
+      assert.equal(sessions[0].branch, 'feat/codex')
+      assert.equal(sessions[0].usage.total, 10200)
+
+      const parsed = await parseSession('33333333', { homeDir: tmp, harness: 'codex' })
+      assert.equal(parsed.meta.errors.length, 1)
+      assert.equal(parsed.meta.toolCounts.bash, 1)
+
+      const statMd = formatStatMarkdown(parsed)
+      assert.match(statMd, /10\.2k\/1k\/200 \(90% cr\)/)
+
+      const digestMd = formatDigestMarkdown(parsed, { format: 'standard' })
+      assert.match(digestMd, /Check failing tests in demo-app/)
+      assert.match(digestMd, /Found 1 failing test in demo-app/)
+      assert.match(digestMd, /exit 1/)
+
+      const inspectMd = await formatInspectMarkdown(parsed, '0..2', { format: 'extended' })
+      assert.match(inspectMd, /1 test failed/)
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
 })
 
 describe('session.rune.js (E2E isolate)', () => {
