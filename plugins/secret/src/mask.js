@@ -1,5 +1,13 @@
 const SENSITIVE_KEY =
-  /(secret|token|password|passwd|pwd|api[_-]?key|access[_-]?key|private[_-]?key|credential|auth|signature|salt|session|oauth|webhook|cookie|dsn)/i
+  /(secret|token|password|passwd|pwd|api[_-]?key|access[_-]?key|private[_-]?key|credential|auth|signature|salt|session|oauth|webhook|cookie|dsn|(?:^|[_.-])key$)/i
+
+// Requires a digit, so that prose and identifiers with the same prefix stay readable.
+const TOKEN_SHAPE =
+  /(?<![A-Za-z0-9])(?:sk[-_]|rk_|pk_live_|gh[pousr]_|github_pat_|glpat-|xox[a-z]-|AIza|AKIA|tvly-|fc-|whsec_|wsec_|SG\.|eyJ)(?=[\w.+/=-]*\d)[\w.+/=-]{12,}/g
+
+const KEY_BLOCK_BEGIN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY/
+const KEY_BLOCK_END = /-----END [A-Z0-9 ]*PRIVATE KEY/
+const COMMENTED_ASSIGNMENT = /^(\s*[#;][#;\s]*(?:export\s+)?)([A-Za-z_][\w.-]*)\s*[=:](.*)$/
 
 function extname(filename) {
   if (!filename) return ''
@@ -23,8 +31,21 @@ export function maskUrlCredentials(value) {
   )
 }
 
+/** Mask whatever is recognizably secret in free text, whatever it is called. */
+export function maskText(text) {
+  const raw = String(text)
+  if (KEY_BLOCK_BEGIN.test(raw)) return '••••'
+  return maskUrlCredentials(raw).replace(TOKEN_SHAPE, token => maskValue(token))
+}
+
 export function maskFor(key, value) {
-  return SENSITIVE_KEY.test(key) ? maskValue(value) : maskUrlCredentials(value)
+  return SENSITIVE_KEY.test(key) && !KEY_BLOCK_BEGIN.test(value) ? maskValue(value) : maskText(value)
+}
+
+function maskComment(line) {
+  const match = COMMENTED_ASSIGNMENT.exec(line)
+  if (!match || !SENSITIVE_KEY.test(match[2])) return maskText(line)
+  return `${match[1]}${match[2]}=${maskFor(match[2], match[3])}`
 }
 
 export function maskJson(value, key = '') {
@@ -70,17 +91,24 @@ export function maskConfig(content, filename, wanted = null) {
   }
 
   const lines = []
+  let inKeyBlock = false
   for (const line of content.split(/\r?\n/)) {
     const trimmed = line.trim()
 
+    if (inKeyBlock) {
+      inKeyBlock = !KEY_BLOCK_END.test(line)
+      continue
+    }
+    inKeyBlock = KEY_BLOCK_BEGIN.test(line) && !KEY_BLOCK_END.test(line)
+
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith(';') || trimmed.startsWith('[')) {
-      if (!wanted) lines.push(line)
+      if (!wanted) lines.push(maskComment(line))
       continue
     }
 
     const match = /^([^=:]+)[=:](.*)$/.exec(line)
     if (!match) {
-      if (!wanted) lines.push(line)
+      if (!wanted) lines.push(maskText(line))
       continue
     }
 
