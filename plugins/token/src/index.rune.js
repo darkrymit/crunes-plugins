@@ -1,4 +1,4 @@
-import { fs, section, stdin } from '@utils'
+import { fs, rune, section, stdin } from '@utils'
 import { estimateTokens, formatLine, formatNumber } from './estimate.js'
 
 async function collectFiles(target) {
@@ -35,6 +35,8 @@ export function args(b) {
 }
 
 export async function run(parsed) {
+  const stop = typeof rune.guard === 'function' ? rune.guard(parsed) : (parsed.help || !parsed.$command ? rune.helpSection(parsed.$command) : null)
+  if (stop) return stop
   const targets = parsed.targets ?? parsed._ ?? []
   const model = parsed.model || 'both'
   const warnLimit = parsed.warn != null ? parseInt(parsed.warn, 10) : null

@@ -390,6 +390,10 @@ export async function run(args) {
    * does. Discovery is skipped entirely on both paths — there is no reason to
    * scan a corpus to print a command list. */
   if (args.help) return rune.helpSection(args.$command)
+  if (typeof rune.unknownOptions === 'function') {
+    const uo = rune.unknownOptions(args)
+    if (uo) return uo
+  }
   if (!args.$command) return rune.helpSection()
 
   const { bundles, problems } = await discover()

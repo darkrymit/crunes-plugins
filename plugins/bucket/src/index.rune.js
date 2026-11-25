@@ -94,8 +94,9 @@ export function args(b) {
 }
 
 export async function run(parsed) {
+  const stop = typeof rune.guard === 'function' ? rune.guard(parsed) : (parsed.help || !parsed.$command ? rune.helpSection(parsed.$command) : null)
+  if (stop) return stop
   const cmd = parsed.$command
-  if (parsed.help || !cmd) return rune.helpSection()
 
   return withRegistry(REGISTRY_LOCATION, async reg => {
     const labels = asArray(parsed.label)

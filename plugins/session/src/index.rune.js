@@ -78,6 +78,8 @@ export function args(b) {
 }
 
 export async function run(parsed) {
+  const stop = typeof rune.guard === 'function' ? rune.guard(parsed) : (parsed.help || !parsed.$command ? rune.helpSection(parsed.$command) : null)
+  if (stop) return stop
   const cmd = parsed.$command
 
   if (cmd === 'list') {
@@ -183,8 +185,5 @@ export async function run(parsed) {
     return [section.create('session', { type: 'markdown', content: md })]
   }
 
-  if (parsed.help || !cmd) {
-    return rune.helpSection()
-  }
   throw new Error('use one of: list, search, digest, read, stat, inspect, step')
 }

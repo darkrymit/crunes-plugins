@@ -1,4 +1,4 @@
-import { fs, section, stdin } from '@utils'
+import { fs, rune, section, stdin } from '@utils'
 import { outlineSource } from './outline.js'
 
 export function args(b) {
@@ -12,6 +12,8 @@ export function args(b) {
 }
 
 export async function run(parsed) {
+  const stop = typeof rune.guard === 'function' ? rune.guard(parsed) : (parsed.help || !parsed.$command ? rune.helpSection(parsed.$command) : null)
+  if (stop) return stop
   const targets = parsed.targets ?? parsed._ ?? []
   const options = {
     comments: Boolean(parsed.comments),

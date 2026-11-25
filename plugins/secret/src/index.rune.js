@@ -1,4 +1,4 @@
-import { fs, section } from '@utils'
+import { fs, rune, section } from '@utils'
 import { maskConfig, parseWantedKeys } from './mask.js'
 
 export function args(b) {
@@ -12,6 +12,8 @@ export function args(b) {
 }
 
 export async function run(parsed) {
+  const stop = typeof rune.guard === 'function' ? rune.guard(parsed) : (parsed.help || !parsed.$command ? rune.helpSection(parsed.$command) : null)
+  if (stop) return stop
   const target = parsed.file ?? parsed._?.[0]
   if (!target) {
     throw new Error('file is required. Usage: crunes -p run secret read <file>')

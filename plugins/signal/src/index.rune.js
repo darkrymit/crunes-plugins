@@ -54,8 +54,9 @@ export function args(b) {
 }
 
 export async function run(parsed) {
+  const stop = typeof rune.guard === 'function' ? rune.guard(parsed) : (parsed.help || !parsed.$command ? rune.helpSection(parsed.$command) : null)
+  if (stop) return stop
   const cmd = parsed.$command
-  if (parsed.help || !cmd) return rune.helpSection()
 
   if (cmd === 'set') {
     if (!parsed.in) throw new Error('--in <duration> is required')

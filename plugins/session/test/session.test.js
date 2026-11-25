@@ -797,6 +797,10 @@ describe('session.rune.js (E2E isolate)', () => {
         runes: { session: { run: { command: '.crunes/runes/session/index.rune.js', permissions: { allow: [...allow, 'fs.read:./.crunes/runes/session/**', ...Object.values(ids).map(id => `fs.read:${id}`)] } } } },
       }))
       const env = { ...process.env, HOME: tmp, USERPROFILE: tmp }
+      const helpOut = runCrunes(tmp, ['-p', 'run', 'session', 'list', '--help'], env)
+      assert.match(helpOut, /List recent sessions/)
+      assert.doesNotMatch(helpOut, /11111111/)
+
       const listOut = runCrunes(tmp, ['-p', 'run', 'session', 'list', '--all', '--harness', 'agy'], env)
       for (const id of Object.values(ids)) {
         assert.match(listOut, new RegExp(id))
@@ -839,6 +843,10 @@ describe('session.rune.js (E2E isolate)', () => {
       )
 
       const env = { ...process.env, HOME: tmp, USERPROFILE: tmp }
+      const helpOut = runCrunes(tmp, ['-p', 'run', 'session', 'list', '--help'], env)
+      assert.match(helpOut, /List recent sessions/)
+      assert.doesNotMatch(helpOut, /11111111/)
+
       const listOut = runCrunes(tmp, ['-p', 'run', 'session', 'list', '--all', '--harness', 'agy'], env)
       assert.match(listOut, /11111111/)
       assert.match(listOut, /agy/)

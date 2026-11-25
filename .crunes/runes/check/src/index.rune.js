@@ -20,6 +20,8 @@ export function args(b) {
 }
 
 export async function run(parsed) {
+  const stop = typeof rune.guard === 'function' ? rune.guard(parsed) : (parsed.help ? rune.helpSection(parsed.$command) : null)
+  if (stop) return stop
   const only = parsed.only || null
   const skipTests = Boolean(parsed['skip-tests'])
 

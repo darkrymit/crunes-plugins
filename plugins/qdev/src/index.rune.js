@@ -286,8 +286,8 @@ export async function run(args) {
   /* Help is scoped to the matched command, so `qdev config --help` renders
    * config's four subcommands rather than all thirty-four. Bare `qdev` prints
    * the index, as every other rune does. */
-  if (args.help) return rune.helpSection(args.$command)
-  if (!args.$command) return rune.helpSection()
+  const stop = typeof rune.guard === 'function' ? rune.guard(args, { unknownCommand: false }) : (args.help || !args.$command ? rune.helpSection(args.$command) : null)
+  if (stop) return stop
 
   const baseUrl = resolveBaseUrl()
 
