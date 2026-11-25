@@ -24,6 +24,7 @@ const {
   normalizeFormat,
   parseSession,
   parseStepRangeSpec,
+  resolveSession,
   searchSessions,
 } = await import('../src/session.js')
 
@@ -298,6 +299,86 @@ describe('session.js (unit + fixture)', () => {
     }
   })
 
+})
+
+describe('session.js (large and broken transcripts)', () => {
+  const writeCodex = (tmp, n, lines) => {
+    const dir = path.join(tmp, '.codex', 'sessions')
+    fs.mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, `rollout-00000000-0000-4000-8000-${String(n).padStart(12, '0')}.jsonl`)
+    fs.writeFileSync(file, lines.join('\n') + '\n')
+    return file
+  }
+  const meta = { timestamp: '2026-11-24T10:00:00Z', type: 'session_meta', payload: { cwd: '/w/demo' } }
+  const prompt = { timestamp: '2026-11-24T10:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: 'Привіт' } }
+  const small = [JSON.stringify(meta), JSON.stringify(prompt)]
+
+  it('summarizes a transcript without reading it whole, in discovery and by path', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-stream-'))
+    const reads = []
+    const env = setupCrunesTest({ cwd: tmp })
+    const realRead = env.utils.fs.read
+    env.utils.fs.read = (p, o) => { reads.push(p); return realRead(p, o) }
+    try {
+      const file = writeCodex(tmp, 1, [...small, ...Array(500).fill(JSON.stringify({ timestamp: '2026-11-24T11:00:00Z', type: 'x', payload: {} }))])
+      const [s] = await listSessions({ homeDir: tmp, all: true, harness: 'codex', noCache: true })
+      assert.equal(s.firstPrompt, 'Привіт')
+      assert.equal(s.project, 'demo')
+      assert.equal(s.endedAt, '2026-11-24T11:00:00Z')
+      const byPath = await resolveSession(file, { homeDir: tmp })
+      assert.equal(byPath.harness, 'codex')
+      assert.deepEqual(reads, [])
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('reports an unreadable transcript and still lists the rest', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-skip-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const realStream = env.utils.fs.readLinesStream
+    env.utils.fs.readLinesStream = (p, o) => {
+      if (p.endsWith('000000000001.jsonl')) throw new Error('unreadable')
+      return realStream(p, o)
+    }
+    try {
+      writeCodex(tmp, 1, small)
+      writeCodex(tmp, 2, small)
+      const skipped = []
+      const list = await listSessions({ homeDir: tmp, all: true, noCache: true, onSkip: (stub, err) => skipped.push(err.message) })
+      assert.equal(list.length, 1)
+      assert.deepEqual(skipped, ['unreadable'])
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps finished summaries when a long first scan is interrupted', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-resume-'))
+    const env = setupCrunesTest({ cwd: tmp })
+    const realStream = env.utils.fs.readLinesStream
+    let scans = 0
+    let failAfter = 120
+    env.utils.fs.readLinesStream = (p, o) => {
+      if (scans >= failAfter) throw new Error('stop')
+      scans += 1
+      return realStream(p, o)
+    }
+    try {
+      for (let i = 0; i < 150; i++) writeCodex(tmp, i, small)
+      const opts = { homeDir: tmp, all: true, limit: 200, cacheFile: path.join(tmp, 'cache.json') }
+      await assert.rejects(listSessions({ ...opts, onSkip: (_, err) => { throw err } }), /stop/)
+      scans = 0
+      failAfter = Infinity
+      assert.equal((await listSessions(opts)).length, 150)
+      assert.equal(scans, 50)
+    } finally {
+      await env.cleanup()
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('session.rune.js (E2E isolate)', () => {

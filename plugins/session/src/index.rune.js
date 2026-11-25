@@ -79,7 +79,9 @@ export async function run(parsed) {
   const cmd = parsed.$command
 
   if (cmd === 'list') {
+    const skipped = [];
     const items = await listSessions({
+      onSkip: (stub, err) => skipped.push(`${stub.path}: ${err.message}`),
       cwd: await fs.resolve('.'),
       project: parsed.project,
       all: Boolean(parsed.all),
@@ -90,8 +92,9 @@ export async function run(parsed) {
       limit: Number(parsed.limit) || 15,
     })
 
+    const skipNote = skipped.map(s => `\n(skipped unreadable transcript ${s})`).join('')
     if (items.length === 0) {
-      return [section.create('session', { type: 'markdown', content: 'No matching sessions found.', sessions: [] })]
+      return [section.create('session', { type: 'markdown', content: `No matching sessions found.${skipNote}`, sessions: [] })]
     }
 
     const lines = items.map(s => {
@@ -105,7 +108,7 @@ export async function run(parsed) {
       return `${s.shortId}  ${hBadge}  ${projBadge}  ${ageBadge}  ${durBadge}  ${tokBadge}  ${subPrefix}${title}`
     })
 
-    return [section.create('session', { type: 'markdown', content: lines.join('\n'), sessions: items })]
+    return [section.create('session', { type: 'markdown', content: lines.join('\n') + skipNote, sessions: items })]
   }
 
   if (cmd === 'search') {

@@ -51,11 +51,32 @@ function defaultDirs(opts = {}) {
   };
 }
 
-async function readHeadAndTailLines(filePath) {
-  const headRaw = await fs.read(filePath, { from: 1, to: 80, throw: false });
-  const tailRaw = await fs.read(filePath, { from: -80, throw: false });
-  const split = s => (s ? s.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : []);
-  return { headLines: split(headRaw), tailLines: split(tailRaw) };
+const EDGE_LINES = 80;
+const MAX_TAIL_CHARS = 8 * 1024 * 1024;
+
+/**
+ * Streams a transcript once. `onHead` gets the first lines, `onRecord` every parsed record.
+ * Returns the last lines, bounded in size so a few huge records cannot exhaust the sandbox.
+ */
+async function scanTranscript(filePath, onHead, onRecord) {
+  const tail = [];
+  let tailChars = 0;
+  let count = 0;
+  for await (const raw of fs.readLinesStream(filePath)) {
+    const line = raw.trim();
+    count += 1;
+    tail.push(line);
+    tailChars += line.length;
+    while (tail.length > EDGE_LINES || (tailChars > MAX_TAIL_CHARS && tail.length > 1)) {
+      tailChars -= tail.shift().length;
+    }
+    if (!line) continue;
+    if (count <= EDGE_LINES) onHead(line);
+    let o;
+    try { o = JSON.parse(line); } catch (_) { continue; }
+    if (o && typeof o === 'object') onRecord(o);
+  }
+  return tail.filter(Boolean);
 }
 
 function cleanUserText(raw) {
@@ -385,7 +406,6 @@ async function summarizeClaudeFile(filePath, stat) {
   const rawBase = path.basename(filePath, '.jsonl');
   const inSubagentsDir = path.basename(path.dirname(filePath)) === 'subagents';
   let id = inSubagentsDir ? rawBase.replace(/^agent-/, '') : rawBase;
-  const { headLines, tailLines } = await readHeadAndTailLines(filePath);
 
   let cwd = null;
   let branch = null;
@@ -446,39 +466,37 @@ async function summarizeClaudeFile(filePath, stat) {
     }
   };
 
-  for (const l of headLines) inspectLine(l);
-  for (const l of tailLines) inspectLine(l);
-
   // Stream-scan full file for accurate deduplicated token totals & true endedAt
   const usageAcc = emptyUsage();
   const seenReqMsg = new Set();
-  const fullRaw = await fs.read(filePath, { throw: false });
-  if (fullRaw) {
-    for (const line of fullRaw.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      let o;
-      try { o = JSON.parse(line); } catch (_) { continue; }
-      if (!startedAt && o.timestamp) startedAt = o.timestamp;
-      if (o.timestamp) endedAt = o.timestamp;
-      if (!cwd && o.cwd) cwd = o.cwd;
-      if (o.type === 'assistant' && o.message && o.message.usage) {
-        const rid = o.requestId || '';
-        const mid = o.message.id || '';
-        if (rid && mid) {
-          const k = `${rid}:${mid}`;
-          if (seenReqMsg.has(k)) continue;
-          seenReqMsg.add(k);
-        }
-        const u = o.message.usage;
-        addUsage(usageAcc, {
-          input: u.input_tokens || 0,
-          cacheCreate: u.cache_creation_input_tokens || 0,
-          cacheRead: u.cache_read_input_tokens || 0,
-          output: u.output_tokens || 0
-        });
+  let firstTs = null;
+  let lastTs = null;
+  let firstCwd = null;
+  const tailLines = await scanTranscript(filePath, inspectLine, (o) => {
+    if (!firstTs && o.timestamp) firstTs = o.timestamp;
+    if (o.timestamp) lastTs = o.timestamp;
+    if (!firstCwd && o.cwd) firstCwd = o.cwd;
+    if (o.type === 'assistant' && o.message && o.message.usage) {
+      const rid = o.requestId || '';
+      const mid = o.message.id || '';
+      if (rid && mid) {
+        const k = `${rid}:${mid}`;
+        if (seenReqMsg.has(k)) return;
+        seenReqMsg.add(k);
       }
+      const u = o.message.usage;
+      addUsage(usageAcc, {
+        input: u.input_tokens || 0,
+        cacheCreate: u.cache_creation_input_tokens || 0,
+        cacheRead: u.cache_read_input_tokens || 0,
+        output: u.output_tokens || 0
+      });
     }
-  }
+  });
+  for (const l of tailLines) inspectLine(l);
+  startedAt = firstTs || startedAt;
+  endedAt = lastTs || endedAt;
+  if (!cwd) cwd = firstCwd;
 
   const finalStarted = startedAt || stat.birthtime.toISOString();
   const finalEnded = endedAt || stat.mtime.toISOString();
@@ -514,8 +532,6 @@ async function summarizeAgyFile(filePath, stat) {
   const brainFolder = path.dirname(sysGenDir);
   const id = path.basename(brainFolder);
   const fullPath = path.join(logsDir, 'transcript_full.jsonl');
-
-  const { headLines, tailLines } = await readHeadAndTailLines(filePath);
 
   let project = null;
   let firstPrompt = null;
@@ -570,27 +586,23 @@ async function summarizeAgyFile(filePath, stat) {
     }
   };
 
-  for (const l of headLines) inspectLine(l);
-  for (const l of tailLines) inspectLine(l);
-
   const usageAcc = emptyUsage();
-  const fullRaw = await fs.read(filePath, { throw: false });
-  if (fullRaw) {
-    for (const line of fullRaw.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      let o;
-      try { o = JSON.parse(line); } catch (_) { continue; }
-      if (!startedAt && o.created_at) startedAt = o.created_at;
-      if (o.created_at) endedAt = o.created_at;
-      if (o.input_tokens || o.cache_read_tokens || o.output_tokens) {
-        addUsage(usageAcc, {
-          input: o.input_tokens || 0,
-          cacheRead: o.cache_read_tokens || 0,
-          output: o.output_tokens || 0
-        });
-      }
+  let firstTs = null;
+  let lastTs = null;
+  const tailLines = await scanTranscript(filePath, inspectLine, (o) => {
+    if (!firstTs && o.created_at) firstTs = o.created_at;
+    if (o.created_at) lastTs = o.created_at;
+    if (o.input_tokens || o.cache_read_tokens || o.output_tokens) {
+      addUsage(usageAcc, {
+        input: o.input_tokens || 0,
+        cacheRead: o.cache_read_tokens || 0,
+        output: o.output_tokens || 0
+      });
     }
-  }
+  });
+  for (const l of tailLines) inspectLine(l);
+  startedAt = firstTs || startedAt;
+  endedAt = lastTs || endedAt;
 
   const isSubagent = Boolean(step0Sender && !hasUserInput);
   const finalStarted = startedAt || stat.birthtime.toISOString();
@@ -653,7 +665,6 @@ function extractCodexOutputText(output) {
 
 async function summarizeCodexFile(filePath, stat) {
   let id = extractCodexIdFromPath(filePath);
-  const { headLines, tailLines } = await readHeadAndTailLines(filePath);
 
   let cwd = null;
   let branch = null;
@@ -668,9 +679,7 @@ async function summarizeCodexFile(filePath, stat) {
   let lastTotalUsage = null;
   const turnUsageAcc = emptyUsage();
 
-  const inspectLine = (line) => {
-    let o;
-    try { o = JSON.parse(line); } catch (_) { return; }
+  const inspectRecord = (o) => {
     if (!startedAt && o.timestamp) startedAt = o.timestamp;
     if (o.timestamp) endedAt = o.timestamp;
     const p = o.payload;
@@ -704,21 +713,7 @@ async function summarizeCodexFile(filePath, stat) {
     }
   };
 
-  for (const l of headLines) inspectLine(l);
-  for (const l of tailLines) inspectLine(l);
-
-  const fullRaw = await fs.read(filePath, { throw: false });
-  if (fullRaw) {
-    // Reset turnUsageAcc before full scan so we don't double-count head/tail
-    turnUsageAcc.input = 0;
-    turnUsageAcc.cacheCreate = 0;
-    turnUsageAcc.cacheRead = 0;
-    turnUsageAcc.output = 0;
-    for (const line of fullRaw.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      inspectLine(line);
-    }
-  }
+  await scanTranscript(filePath, () => {}, inspectRecord);
 
   const usageAcc = lastTotalUsage ? (codexUsageDelta(lastTotalUsage) || emptyUsage()) : turnUsageAcc;
   const finalStarted = startedAt || stat.birthtime.toISOString();
@@ -863,6 +858,8 @@ async function hydrateStub(stub, cacheObj = null) {
   return summary;
 }
 
+const SAVE_EVERY = 100;
+
 async function listSessions(opts = {}) {
     const stubs = await discoverSessionStubs(opts);
   const limit = Number(opts.limit) > 0 ? Number(opts.limit) : 15;
@@ -910,11 +907,24 @@ async function listSessions(opts = {}) {
   const prevSize = Object.keys(diskCache).length;
   let cacheDirty = false;
 
+  let unsaved = 0;
   for (const stub of stubs) {
     const before = diskCache[stub.path];
-    const s = await hydrateStub(stub, diskCache);
+    let s;
+    try {
+      s = await hydrateStub(stub, diskCache);
+    } catch (err) {
+      if (opts.onSkip) opts.onSkip(stub, err);
+      continue;
+    }
     if (!before || before.size !== stub.stat.size || before.mtimeMs !== stub.stat.mtimeMs) {
       cacheDirty = true;
+      unsaved += 1;
+      // A first scan can be long; saving along the way lets an interrupted one resume.
+      if (unsaved >= SAVE_EVERY) {
+        await saveSessionCache(cachePath, diskCache);
+        unsaved = 0;
+      }
     }
     hydratedCache.push(s);
   }
@@ -948,7 +958,11 @@ async function resolveSession(idOrLatest, opts = {}) {
     if (idOrLatest && (await fs.exists(idOrLatest))) {
     const st = await safeStat(idOrLatest);
     if (st && st.isFile) {
-      const firstLine = (await fs.read(idOrLatest)).split('\n')[0] || '{}';
+      let firstLine = '{}';
+      for await (const line of fs.readLinesStream(idOrLatest)) {
+        firstLine = line || '{}';
+        break;
+      }
       let parsed = {};
       try {
         parsed = JSON.parse(firstLine);
