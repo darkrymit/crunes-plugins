@@ -30,7 +30,8 @@
             "fs.read:~/.codex/archived_sessions/**",
             "fs.read:~/.crunes/cache/**",
             "fs.write:~/.crunes/cache/**",
-            "fs.read:**"
+            "fs.read:**",
+            "shell.run:node *"
           ],
           "deny": []
         }

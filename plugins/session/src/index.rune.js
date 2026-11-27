@@ -1,4 +1,4 @@
-import { fs, rune, section } from '@utils'
+import { fs, rune, section, shell } from '@utils'
 import {
   fmtDuration,
   fmtTok,
@@ -34,6 +34,7 @@ export function args(b) {
        .option('--subagents', 'Include child subagent sessions', false)
        .option('-s, --sort <by>', 'Sort by: recent | tokens | duration | size', 'recent')
        .option('-n, --limit <number>', 'Maximum sessions to return', '15')
+       .option('--fast', 'Skip full-file token counting on uncached sessions', false)
     })
     .command('search', 'Search session transcripts by text or regex', c => {
       c.positional('<query>', 'Search text or /regex/flags')
@@ -77,16 +78,31 @@ export function args(b) {
     })
 }
 
+async function runHostScan(cmd, opts) {
+  try {
+    if (!(await fs.exists('@plugin/scripts/scan.mjs'))) return null
+    const scriptPath = await fs.resolve('@plugin/scripts/scan.mjs')
+    const res = await shell.exec(`node "${scriptPath}" ${cmd}`, {
+      env: { SESSION_SCAN_OPTS: JSON.stringify(opts) },
+      throw: false,
+    })
+    if (res.exitCode !== 0 || !res.stdout) return null
+    const data = JSON.parse(res.stdout)
+    return data && data.ok ? data : null
+  } catch {
+    return null
+  }
+}
+
 export async function run(parsed) {
   const stop = typeof rune.guard === 'function' ? rune.guard(parsed) : (parsed.help || !parsed.$command ? rune.helpSection(parsed.$command) : null)
   if (stop) return stop
   const cmd = parsed.$command
 
   if (cmd === 'list') {
-    const skipped = [];
-    const items = await listSessions({
-      onSkip: (stub, err) => skipped.push(`${stub.path}: ${err.message}`),
-      cwd: await fs.resolve('.'),
+    const cwd = await fs.resolve('.')
+    const listOpts = {
+      cwd,
       project: parsed.project,
       all: Boolean(parsed.all),
       harness: parsed.harness,
@@ -94,7 +110,16 @@ export async function run(parsed) {
       sort: parsed.sort || 'recent',
       query: parsed.query,
       limit: Number(parsed.limit) || 15,
-    })
+      fast: Boolean(parsed.fast),
+    }
+    const skipped = []
+    const host = await runHostScan('list', listOpts)
+    const items = host
+      ? (skipped.push(...(host.skipped || [])), host.items)
+      : await listSessions({
+          ...listOpts,
+          onSkip: (stub, err) => skipped.push(`${stub.path}: ${err.message}`),
+        })
 
     const skipNote = skipped.map(s => `\n(skipped unreadable transcript ${s})`).join('')
     if (items.length === 0) {
@@ -116,16 +141,24 @@ export async function run(parsed) {
   }
 
   if (cmd === 'search') {
-    const skipped = []
-    const hits = await searchSessions(parsed.query, {
-      onSkip: (s, err) => skipped.push(`${s.path}: ${err.message}`),
-      cwd: await fs.resolve('.'),
+    const cwd = await fs.resolve('.')
+    const searchOpts = {
+      cwd,
       project: parsed.project,
       all: Boolean(parsed.all),
       harness: parsed.harness,
       subagents: Boolean(parsed.subagents),
       limit: Number(parsed.limit) || 20,
-    })
+      query: parsed.query,
+    }
+    const skipped = []
+    const host = await runHostScan('search', searchOpts)
+    const hits = host
+      ? (skipped.push(...(host.skipped || [])), host.hits)
+      : await searchSessions(parsed.query, {
+          ...searchOpts,
+          onSkip: (s, err) => skipped.push(`${s.path}: ${err.message}`),
+        })
     const skipNote = skipped.map(s => `\n(skipped unreadable transcript ${s})`).join('')
     if (hits.length === 0) {
       return [section.create('session', { type: 'markdown', content: `No matching transcript lines found.${skipNote}`, hits: [] })]

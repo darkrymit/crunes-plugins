@@ -861,3 +861,120 @@ describe('session.rune.js (E2E isolate)', () => {
     }
   })
 })
+
+describe('session.js (hybrid host scan & fast mode)', () => {
+  const scanScript = path.resolve(__dirname, '../scripts/scan.mjs')
+
+  it('fast mode skips middle token scans, preserves endedAt order, and does not poison cache', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-fast-'))
+    try {
+      setupCrunesTest({ cwd: tmp })
+      const claudeProj = path.join(tmp, '.claude', 'projects', 'demo-proj')
+      fs.mkdirSync(claudeProj, { recursive: true })
+      const bigClaude = path.join(claudeProj, 'aaaaaaaa-1111-2222-3333-444444444444.jsonl')
+      const head = JSON.stringify({
+        type: 'user',
+        timestamp: '2026-11-20T10:00:00Z',
+        cwd: '/work/demo-proj',
+        message: { role: 'user', content: 'Fast mode test prompt' },
+      })
+      const midPad = 'x'.repeat(12000)
+      const midRows = Array.from({ length: 100 }, (_, i) =>
+        JSON.stringify({
+          type: 'assistant',
+          requestId: `req-${i}`,
+          timestamp: '2026-11-20T10:01:00Z',
+          message: {
+            id: `msg-${i}`,
+            role: 'assistant',
+            content: [{ type: 'text', text: midPad }],
+            usage: { input_tokens: 100, output_tokens: 50 },
+          },
+        })
+      )
+      const tail = JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-11-20T10:05:00Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Done' }] },
+      })
+      fs.writeFileSync(bigClaude, [head, ...midRows, tail].join('\n') + '\n', 'utf8')
+      assert.ok(fs.statSync(bigClaude).size > 1024 * 1024)
+
+      const cacheFile = path.join(tmp, '.crunes', 'cache', 'session-index.json')
+      const fastList = await listSessions({ homeDir: tmp, all: true, fast: true, cacheFile })
+      assert.equal(fastList.length, 1)
+      assert.equal(fastList[0].shortId, 'aaaaaaaa')
+      assert.equal(fastList[0].endedAt, '2026-11-20T10:05:00Z')
+      assert.equal(fastList[0].usage.total, 0)
+      assert.equal(fs.existsSync(cacheFile), false)
+
+      // Full scan populates cache, and subsequent fast scan reuses cached tokens.
+      const fullList = await listSessions({ homeDir: tmp, all: true, cacheFile })
+      assert.equal(fullList[0].usage.total, 15000)
+      assert.equal(fs.existsSync(cacheFile), true)
+
+      const fastCached = await listSessions({ homeDir: tmp, all: true, fast: true, cacheFile })
+      assert.equal(fastCached[0].usage.total, 15000)
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('scripts/scan.mjs matches listSessions and searchSessions across Claude, Codex (.zst), and Agy (.db)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crunes-session-host-'))
+    try {
+      makeAgyFixture(tmp, 'antigravity', '11111111-2222-3333-4444-555555555555')
+
+      const codexDir = path.join(tmp, '.codex', 'archived_sessions')
+      fs.mkdirSync(codexDir, { recursive: true })
+      const codexId = '99999999-8888-7777-6666-555555555555'
+      const codexLines = [
+        JSON.stringify({
+          type: 'session_meta',
+          timestamp: '2026-11-22T11:00:00Z',
+          payload: { id: codexId, cwd: '/work/demo', timestamp: '2026-11-22T11:00:00Z' },
+        }),
+        JSON.stringify({
+          type: 'event_msg',
+          timestamp: '2026-11-22T11:00:01Z',
+          payload: { type: 'user_message', message: 'Find the needle-in-zst-codex token' },
+        }),
+        JSON.stringify({
+          type: 'token_usage_record',
+          timestamp: '2026-11-22T11:00:02Z',
+          payload: {
+            thread_id: codexId,
+            response_id: 'r1',
+            usage: { input_tokens: 400, cached_input_tokens: 100, output_tokens: 50, total_tokens: 450 },
+          },
+        }),
+      ].join('\n') + '\n'
+      fs.writeFileSync(
+        path.join(codexDir, `rollout-2026-11-22T11-00-00-${codexId}.jsonl.zst`),
+        zstdCompressSync(Buffer.from(codexLines, 'utf8'))
+      )
+
+      const listRaw = execFileSync('node', [scanScript, 'list'], {
+        env: { ...process.env, SESSION_SCAN_OPTS: JSON.stringify({ homeDir: tmp, all: true }) },
+        encoding: 'utf8',
+      })
+      const listRes = JSON.parse(listRaw)
+      assert.equal(listRes.ok, true)
+      assert.equal(listRes.items.length, 2)
+      const codexItem = listRes.items.find(s => s.harness === 'codex')
+      assert.ok(codexItem)
+      assert.equal(codexItem.usage.total, 450)
+
+      const searchRaw = execFileSync('node', [scanScript, 'search'], {
+        env: { ...process.env, SESSION_SCAN_OPTS: JSON.stringify({ homeDir: tmp, all: true, query: 'needle-in-zst-codex' }) },
+        encoding: 'utf8',
+      })
+      const searchRes = JSON.parse(searchRaw)
+      assert.equal(searchRes.ok, true)
+      assert.equal(searchRes.hits.length, 1)
+      assert.equal(searchRes.hits[0].shortId, '99999999')
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+})
